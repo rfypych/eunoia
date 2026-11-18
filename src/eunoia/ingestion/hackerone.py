@@ -40,6 +40,7 @@ import httpx
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
+from eunoia.classify import apply_classification
 from eunoia.db import get_engine
 from eunoia.dedup import (
     content_hash,
@@ -49,6 +50,8 @@ from eunoia.dedup import (
     simhash_to_db,
     url_hash,
 )
+from eunoia.embed import embed_writeup
+from eunoia.enrich import enrich_cve
 from eunoia.ingestion.jobs import enqueue_discovery, idempotency_key_for
 from eunoia.models import Job, Source, SourceHost, Writeup, WriteupEvent, WriteupSource, WriteupVuln
 
@@ -408,8 +411,27 @@ def _poll(
 # Worker: discovery job -> upserted Writeup (never blind-insert)
 # ---------------------------------------------------------------------------
 
-def handle_discovery_job(session: Session, job: Job) -> str:
-    """Process one discovery job; returns ``"created"`` or ``"merged"``."""
+def handle_discovery_job(
+    session: Session,
+    job: Job,
+    *,
+    model=None,
+    client: httpx.Client | None = None,
+    limiter=None,
+) -> str:
+    """Process one discovery job; returns ``"created"`` or ``"merged"``.
+
+    Upsert first (dedup, never blind-insert), then the enrichment
+    pipeline (Task 6 classify → Task 7 enrich → Task 8 embed) on the
+    upserted writeup, for both the create and the merge path. ``model``
+    is an injectable encoder for tests; without one the production
+    model is loaded once and reused (``embed.get_model``). ``client`` /
+    ``limiter`` are forwarded to NVD enrichment (tests inject a mocked
+    HTTP client). The pipeline never fails the job: a step that raises
+    is recorded in the event detail (``pipeline_errors``) and the job
+    still completes — a downstream bug must not dead-letter a
+    discovery job.
+    """
     payload: dict[str, Any] = dict(job.payload or {})
     canonical_url = payload["canonical_url"]
     text = payload.get("text") or f"{payload.get('title', '')} {payload.get('excerpt', '')}"
@@ -433,63 +455,116 @@ def handle_discovery_job(session: Session, job: Job) -> str:
     if matched is not None and decision in _MERGE_DECISIONS:
         matched.last_seen_at = now
         _add_source_url(session, matched.id, job.source_id, canonical_url)
-        session.add(WriteupEvent(
-            writeup_id=matched.id, event="updated", actor="hackerone-poller",
-            detail={"dedup": decision, "merged_source_url": canonical_url},
-        ))
+        writeup, outcome = matched, "merged"
+        detail: dict[str, Any] = {"dedup": decision, "merged_source_url": canonical_url}
+    else:
+        disclosed_at = _parse_dt(payload.get("disclosed_at"))
+        writeup = Writeup(
+            canonical_url=canonical_url,
+            url_hash=url_hash(canonical_url),
+            external_id=payload.get("external_id"),
+            title=payload.get("title") or "",
+            excerpt=(payload.get("excerpt") or "")[:300],
+            author_name=payload.get("author_name"),
+            source_id=job.source_id,
+            source_type="hackerone_report",
+            published_at=disclosed_at,
+            disclosed_at=disclosed_at,
+            fetched_at=now,
+            last_seen_at=now,
+            content_hash=candidate["content_hash"],
+            simhash=simhash_to_db(candidate["simhash"]),
+            # Hacktivity reports are English; language detection is the
+            # Task 13 quality gate, not the poller.
+            language="en",
+            status="active",
+        )
+        session.add(writeup)
         session.flush()
-        return "merged"
-    disclosed_at = _parse_dt(payload.get("disclosed_at"))
-    writeup = Writeup(
-        canonical_url=canonical_url,
-        url_hash=url_hash(canonical_url),
-        external_id=payload.get("external_id"),
-        title=payload.get("title") or "",
-        excerpt=(payload.get("excerpt") or "")[:300],
-        author_name=payload.get("author_name"),
-        source_id=job.source_id,
-        source_type="hackerone_report",
-        published_at=disclosed_at,
-        disclosed_at=disclosed_at,
-        fetched_at=now,
-        last_seen_at=now,
-        content_hash=candidate["content_hash"],
-        simhash=simhash_to_db(candidate["simhash"]),
-        # Hacktivity reports are English; language detection is the
-        # Task 13 quality gate, not the poller.
-        language="en",
-        status="active",
-    )
-    session.add(writeup)
-    session.flush()
-    _add_source_url(session, writeup.id, job.source_id, canonical_url)
-    severity = payload.get("severity")
-    cve_ids = payload.get("cve_ids") or []
-    if payload.get("cwe") or cve_ids or severity or payload.get("bounty_amount") is not None:
-        program = payload.get("program")
-        session.add(WriteupVuln(
-            writeup_id=writeup.id,
-            vuln_class=None,  # Task 6 classification assigns this
-            cwe_id=payload.get("cwe"),
-            cve_id=cve_ids[0] if cve_ids else None,
-            severity=severity if severity in _SEVERITIES else None,
-            severity_source="hackerone" if severity in _SEVERITIES else None,
-            bounty_amount=payload.get("bounty_amount"),
-            bounty_currency=payload.get("bounty_currency"),
-            bounty_verified=bool(payload.get("bounty_verified")),
-            verified_against="hackerone" if payload.get("bounty_verified") else None,
-            program=program,
-            program_slug=_slugify(program) if program else None,
-        ))
-    detail: dict[str, Any] = {"dedup": decision, "source": "hackerone"}
-    if matched is not None and decision in ("near_dup_review", "title_candidate"):
-        detail["candidate_of"] = matched.api_id
+        _add_source_url(session, writeup.id, job.source_id, canonical_url)
+        severity = payload.get("severity")
+        cve_ids = payload.get("cve_ids") or []
+        if payload.get("cwe") or cve_ids or severity or payload.get("bounty_amount") is not None:
+            program = payload.get("program")
+            session.add(WriteupVuln(
+                writeup_id=writeup.id,
+                vuln_class=None,  # Task 6 classification assigns this
+                cwe_id=payload.get("cwe"),
+                cve_id=cve_ids[0] if cve_ids else None,
+                severity=severity if severity in _SEVERITIES else None,
+                severity_source="hackerone" if severity in _SEVERITIES else None,
+                bounty_amount=payload.get("bounty_amount"),
+                bounty_currency=payload.get("bounty_currency"),
+                bounty_verified=bool(payload.get("bounty_verified")),
+                verified_against="hackerone" if payload.get("bounty_verified") else None,
+                program=program,
+                program_slug=_slugify(program) if program else None,
+            ))
+        outcome = "created"
+        detail = {"dedup": decision, "source": "hackerone"}
+        if matched is not None and decision in ("near_dup_review", "title_candidate"):
+            detail["candidate_of"] = matched.api_id
+    detail.update(_run_enrichment_pipeline(
+        session, writeup, model=model, client=client, limiter=limiter,
+    ))
     session.add(WriteupEvent(
-        writeup_id=writeup.id, event="created", actor="hackerone-poller",
+        writeup_id=writeup.id,
+        event="updated" if outcome == "merged" else "created",
+        actor="hackerone-poller",
         detail=detail,
     ))
     session.flush()
-    return "created"
+    return outcome
+
+
+def _run_enrichment_pipeline(
+    session: Session,
+    writeup: Writeup,
+    *,
+    model=None,
+    client: httpx.Client | None = None,
+    limiter=None,
+) -> dict[str, Any]:
+    """Classify → enrich CVEs → embed one upserted writeup (R6 wiring).
+
+    Returns the pipeline detail recorded on the writeup's event:
+    ``vuln_class``, ``cves_enriched``, ``embed`` (``"embedded"`` /
+    ``"skipped"`` / ``"failed"``) and ``pipeline_errors``. Every step
+    is best-effort: a step that raises is recorded and the pipeline
+    continues, so the discovery job still completes. Idempotent:
+    classification fills a null class only, enrichment is cached
+    (1-day TTL), and embedding skips when the template hash is
+    unchanged — re-running the worker duplicates nothing.
+    """
+    errors: list[str] = []
+    vuln_class: str | None = None
+    try:
+        vuln_row = apply_classification(session, writeup)
+        vuln_class = vuln_row.vuln_class
+    except Exception as exc:
+        errors.append(f"classification: {exc}")
+    enriched: list[str] = []
+    cve_ids: list[str] = []
+    for row in session.query(WriteupVuln).filter_by(writeup_id=writeup.id).all():
+        if row.cve_id and row.cve_id not in cve_ids:
+            cve_ids.append(row.cve_id)
+    for cve_id in cve_ids:
+        try:
+            enrich_cve(cve_id, session=session, client=client, limiter=limiter)
+            enriched.append(cve_id)
+        except Exception as exc:
+            errors.append(f"enrich {cve_id}: {exc}")
+    try:
+        embed_result = embed_writeup(writeup.id, session=session, model=model)
+    except Exception as exc:
+        embed_result = "failed"
+        errors.append(f"embed: {exc}")
+    return {
+        "vuln_class": vuln_class,
+        "cves_enriched": enriched,
+        "embed": embed_result,
+        "pipeline_errors": errors,
+    }
 
 
 _CANDIDATE_LIMIT = 200

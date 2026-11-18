@@ -26,6 +26,7 @@ from eunoia.models import Job
 __all__ = [
     "backoff_for_attempt",
     "claim_next_job",
+    "dispatch_job",
     "enqueue_discovery",
     "idempotency_key_for",
     "mark_job_done",
@@ -130,6 +131,31 @@ def mark_job_failed(session: Session, job: Job, error: str | Exception) -> None:
         job.status = "pending"
         job.next_attempt_at = _now() + backoff_for_attempt(job.attempts)
     session.flush()
+
+
+def dispatch_job(session: Session, job: Job, **kwargs) -> object:
+    """Route one job to its handler by ``kind``.
+
+    ``"nvd_refresh"`` → :func:`eunoia.enrich.handle_nvd_refresh_job`;
+    ``"hackerone_discovery"`` / ``"discovery"`` → the discovery worker.
+    Unknown kinds raise ``ValueError`` so a mis-routed job fails loudly
+    instead of silently doing nothing. Extra keyword arguments
+    (``model``, ``client``, ``limiter``) are forwarded to the handler —
+    tests inject a stub encoder / mocked HTTP client this way; the
+    production worker loop calls ``dispatch_job(session, job)`` bare.
+
+    The handler imports are function-local: ``hackerone.py`` imports
+    this module, so a top-level import would be circular.
+    """
+    if job.kind == "nvd_refresh":
+        from eunoia.enrich import handle_nvd_refresh_job
+
+        return handle_nvd_refresh_job(session, job, **kwargs)
+    if job.kind in ("hackerone_discovery", "discovery"):
+        from eunoia.ingestion.hackerone import handle_discovery_job
+
+        return handle_discovery_job(session, job, **kwargs)
+    raise ValueError(f"unknown job kind: {job.kind!r}")
 
 
 def process_job(

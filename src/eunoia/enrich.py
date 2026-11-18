@@ -29,6 +29,26 @@ from eunoia.ingestion.nvd import (
 )
 from eunoia.models import CveCache, Job
 
+__all__ = ["CACHE_TTL", "CveRecord", "enrich_cve", "handle_nvd_refresh_job"]
+
+
+def handle_nvd_refresh_job(
+    session: Session,
+    job: Job,
+    client: httpx.Client | None = None,
+    limiter: TokenBucket | None = None,
+) -> CveRecord:
+    """Consume one ``nvd_refresh`` job: re-fetch its CVE into ``cve_cache``.
+
+    The job payload carries ``{"cve_id": ...}`` (queued by
+    :func:`enrich_cve` when a fetch degraded). Raises ``ValueError``
+    when the payload has no CVE id. ``dispatch_job`` routes to this.
+    """
+    cve_id = (job.payload or {}).get("cve_id")
+    if not cve_id:
+        raise ValueError(f"nvd_refresh job {job.id} has no cve_id in payload")
+    return enrich_cve(str(cve_id), session=session, client=client, limiter=limiter)
+
 CACHE_TTL = timedelta(days=1)
 
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,7}$", re.IGNORECASE)
