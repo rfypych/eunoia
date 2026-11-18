@@ -32,9 +32,13 @@ def classify(status: int, body: str) -> str:
         return "no_auth_ok"
     if status == 403:
         return "plan_gated_403"
-    if status in (401,):
+    if status == 401:
         return "token_required"
-    return "token_required"
+    # 429 (throttled), 5xx (server error), 0 (network failure) and any
+    # other unexpected status are NOT auth evidence: they must not be
+    # mislabelled as token_required, or Task 5 would chase a token
+    # instead of backing off / retrying later.
+    return "probe_failed"
 
 
 def main() -> None:
@@ -77,6 +81,15 @@ Do not build the poller on an assumption. Options, in order:
 Do not build the poller on an assumption. A token is required; obtain one
 (customer token or HackerOne account token) and re-probe authenticated
 before building the poller.
+"""
+    elif outcome == "probe_failed":
+        fallback = """
+## No decision — probe failed
+
+The probe did not reach a conclusive auth answer (rate-limited, server
+error, or network failure). This is NOT evidence that a token is required.
+Do not seek a token on the basis of this run. Back off and re-probe later;
+Task 5 must not be built on this outcome.
 """
 
     doc = f"""# HackerOne Hacktivity auth probe — {now}
