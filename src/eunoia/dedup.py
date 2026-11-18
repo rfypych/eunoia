@@ -48,8 +48,12 @@ __all__ = [
     "normalize_text",
     "normalize_url",
     "simhash64",
+    "simhash_to_db",
     "url_hash",
 ]
+
+_MASK64 = (1 << 64) - 1
+_INT64_MAX = (1 << 63) - 1
 
 DedupDecision = Literal[
     "exact",
@@ -140,8 +144,24 @@ def simhash64(text: str) -> int:
 
 
 def hamming_distance(a: int, b: int) -> int:
-    """Number of differing bits between two 64-bit SimHashes."""
-    return bin(a ^ b).count("1")
+    """Number of differing bits between two 64-bit SimHashes.
+
+    Both operands are masked to 64 bits first: a SimHash stored in a signed
+    Postgres ``bigint`` comes back negative for values >= 2**63, and
+    ``bin()`` of a negative int does not count two's-complement bits.
+    """
+    return bin((a & _MASK64) ^ (b & _MASK64)).count("1")
+
+
+def simhash_to_db(value: int) -> int:
+    """Map an unsigned 64-bit SimHash into the signed ``bigint`` range.
+
+    Values >= 2**63 are stored as their two's-complement negative; they
+    round-trip exactly through ``hamming_distance`` (which masks to 64
+    bits), so stored-vs-text comparisons stay correct.
+    """
+    value &= _MASK64
+    return value - (1 << 64) if value > _INT64_MAX else value
 
 
 def _text_of(record: Any) -> str | None:

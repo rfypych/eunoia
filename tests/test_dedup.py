@@ -161,3 +161,17 @@ def test_exact_url_beats_external_id():
     a = {"canonical_url": "https://hackerone.com/reports/1", "external_id": "hackerone:1"}
     b = {"canonical_url": "https://hackerone.com/reports/1", "external_id": "hackerone:999"}
     assert dedup_decision(a, b) == "exact"
+
+
+def test_simhash_round_trips_through_signed_bigint():
+    # ~half of all SimHashes exceed the signed bigint max; a stored value
+    # must still compare equal to the text-derived one (Task 5 worker).
+    from eunoia.dedup import simhash_to_db
+
+    text = "IDOR on profile API IDOR on profile API"
+    raw = simhash64(text)
+    assert raw > (1 << 63) - 1  # this text is one of the overflowing cases
+    stored = simhash_to_db(raw)
+    assert -(1 << 63) <= stored < (1 << 63)
+    assert hamming_distance(stored, raw) == 0
+    assert hamming_distance(-1, 0) == 64
