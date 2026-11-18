@@ -17,11 +17,15 @@ the cursor is applied client-side: pages are fetched newest-first and
 polling stops at the first item at or below the cursor.
 
 429 policy (§5.7): one 429 → back off the host 60s (``SourceHost``) and
-halve the source's per-minute budget; three 429s in one UTC day → the
+halve the source's per-minute budget — the halved budget is ephemeral
+state (``cursor_state["backoff_rate_limit_per_min"]``), the configured
+``source.rate_limit_per_min`` is never mutated, and the back-off key is
+dropped on the next successful poll; three 429s in one UTC day → the
 host is paused until tomorrow (``HostPausedError``, no HTTP call).
 403 → ``PlanGatedError`` and the source is flagged
 ``cursor_state["blocked"] = "plan_gated_403"`` so ``/status`` can show it
-instead of an empty corpus looking like "no writeups exist".
+instead of an empty corpus looking like "no writeups exist"; the flag is
+dropped on the next successful poll.
 """
 
 from __future__ import annotations
@@ -33,7 +37,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 import httpx
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from eunoia.db import get_engine
@@ -145,7 +149,13 @@ def _is_paused(cursor: dict, today: date) -> bool:
 
 
 def _record_429(session: Session, source: Source, cursor: dict, today: date) -> dict:
-    """One 429: back off the host 60s, halve its budget, count the day."""
+    """One 429: back off the host 60s, count the day, record a halved budget.
+
+    The halved budget is ephemeral state in ``cursor_state`` only — the
+    configured ``source.rate_limit_per_min`` is never mutated, so a
+    sequence of 429s cannot ratchet it down to 1 permanently. The
+    back-off key is dropped by the success path in ``_poll``.
+    """
     host = session.get(SourceHost, HACKERONE_HOST)
     if host is None:
         host = SourceHost(host=HACKERONE_HOST)
@@ -161,9 +171,11 @@ def _record_429(session: Session, source: Source, cursor: dict, today: date) -> 
         "rate_429_count": count,
         "rate_429_date": today.isoformat(),
     }
-    source.cursor_state = new_cursor
     if source.rate_limit_per_min:
-        source.rate_limit_per_min = max(1, int(source.rate_limit_per_min) // 2)
+        new_cursor["backoff_rate_limit_per_min"] = max(
+            1, int(source.rate_limit_per_min) // 2
+        )
+    source.cursor_state = new_cursor
     return new_cursor
 
 
@@ -261,6 +273,19 @@ def _poll(
             f"{HACKERONE_HOST} paused after {MAX_429_PER_DAY} 429s today; "
             "retry tomorrow"
         )
+    # Enforce the 60s host back-off recorded by _record_429: a poll inside
+    # the window raises without issuing any HTTP call.
+    host = session.get(SourceHost, HACKERONE_HOST)
+    if host is not None and host.last_429 is not None:
+        last_429 = host.last_429
+        if last_429.tzinfo is None:
+            last_429 = last_429.replace(tzinfo=timezone.utc)
+        elapsed = (now - last_429).total_seconds()
+        if elapsed < 60:
+            raise RateLimitedError(
+                f"{HACKERONE_HOST} backed off after 429; "
+                f"retry in {60 - elapsed:.0f}s"
+            )
     cursor_dt = _parse_dt(cursor.get("disclosed_at"))
     cursor_latest_dt = _parse_dt(cursor.get("latest_disclosable_activity_at"))
     http = client or _default_client()
@@ -268,6 +293,14 @@ def _poll(
     enqueued = 0
     newest: str | None = None
     newest_latest: str | None = None
+    # Oldest disclosed_at processed this run. When the loop ends because
+    # MAX_PAGES_PER_RUN is hit (page cap), the cursor may only advance to
+    # the oldest processed item — advancing to the newest would skip the
+    # unprocessed pages between the oldest and the old cursor.
+    oldest: str | None = None
+    # True when the loop ended by reaching the cursor, a short/empty page
+    # (i.e. the source is exhausted); False when it ended by page cap.
+    completed = False
     try:
         for page in range(1, max_pages + 1):
             response = http.get(
@@ -306,6 +339,7 @@ def _poll(
                 raise
             items = response.json().get("data") or []
             if not items:
+                completed = True
                 break
             stop = False
             for item in items:
@@ -328,19 +362,32 @@ def _poll(
                     newest is None or _parse_dt(parsed["disclosed_at"]) > _parse_dt(newest)
                 ):
                     newest = parsed["disclosed_at"]
+                if parsed["disclosed_at"] and (
+                    oldest is None or _parse_dt(parsed["disclosed_at"]) < _parse_dt(oldest)
+                ):
+                    oldest = parsed["disclosed_at"]
                 latest = parsed.get("latest_disclosable_activity_at")
                 if latest and (
                     newest_latest is None or _parse_dt(latest) > _parse_dt(newest_latest)
                 ):
                     newest_latest = latest
             if stop or len(items) < min(page_size, PAGE_SIZE_MAX):
+                completed = True
                 break
     finally:
         if client is None:
             http.close()
     new_cursor = dict(cursor)
-    if newest and (cursor_dt is None or _parse_dt(newest) > cursor_dt):
-        new_cursor["disclosed_at"] = newest
+    # A later success clears the transient flags written by earlier
+    # failures: the plan-gated block and the ephemeral halved budget.
+    new_cursor.pop("blocked", None)
+    new_cursor.pop("backoff_rate_limit_per_min", None)
+    # Page cap: only the oldest processed item is a safe cursor — pages
+    # beyond the cap (older than `oldest`, newer than the old cursor)
+    # have not been seen yet. Otherwise the newest item is safe.
+    cursor_target = oldest if not completed else newest
+    if cursor_target and (cursor_dt is None or _parse_dt(cursor_target) > cursor_dt):
+        new_cursor["disclosed_at"] = cursor_target
     if newest_latest and (
         cursor_latest_dt is None or _parse_dt(newest_latest) > cursor_latest_dt
     ):
@@ -353,7 +400,7 @@ def _poll(
     return PollResult(
         discovered=discovered,
         enqueued=enqueued,
-        last_cursor=newest or cursor.get("disclosed_at"),
+        last_cursor=cursor_target or cursor.get("disclosed_at"),
     )
 
 
@@ -445,14 +492,42 @@ def handle_discovery_job(session: Session, job: Job) -> str:
     return "created"
 
 
+_CANDIDATE_LIMIT = 200
+
+
 def _find_existing(session: Session, candidate: dict) -> list[Writeup]:
-    """Rows matching the candidate on any of dedup layers 1–3."""
+    """Rows matching the candidate on any of dedup layers 1–5.
+
+    Layers 1–3 (exact URL hash / external id / content hash) and the
+    layer-5 signals (same normalized title, same author) are filtered in
+    SQL. Layer 4 (SimHash) cannot be filtered in SQL — Hamming distance
+    is not a SQL predicate here — so a bounded set of the most recent
+    rows carrying a SimHash is fetched and scored in Python by
+    ``dedup_decision``. The set is bounded (``_CANDIDATE_LIMIT``) so a
+    large corpus cannot blow up one worker call; rows that score
+    ``"new"`` are harmless — the caller keeps the strongest decision.
+    """
     clauses = [Writeup.url_hash == url_hash(candidate["canonical_url"])]
     if candidate.get("external_id"):
         clauses.append(Writeup.external_id == candidate["external_id"])
     if candidate.get("content_hash"):
         clauses.append(Writeup.content_hash == candidate["content_hash"])
-    return session.query(Writeup).filter(or_(*clauses)).all()
+    title = normalize_text(str(candidate.get("title") or ""))
+    if title:
+        clauses.append(func.lower(Writeup.title) == title)
+    author = normalize_text(str(candidate.get("author_name") or ""))
+    if author:
+        clauses.append(func.lower(Writeup.author_name) == author)
+    matched = session.query(Writeup).filter(or_(*clauses)).all()
+    recent = (
+        session.query(Writeup)
+        .filter(Writeup.simhash.is_not(None))
+        .order_by(Writeup.fetched_at.desc().nulls_last())
+        .limit(_CANDIDATE_LIMIT)
+        .all()
+    )
+    seen = {row.id for row in matched}
+    return matched + [row for row in recent if row.id not in seen]
 
 
 def _add_source_url(
