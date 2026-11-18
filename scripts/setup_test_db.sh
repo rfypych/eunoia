@@ -39,7 +39,21 @@ sudo -u postgres psql -v ON_ERROR_STOP=1 -d "${DB}" -c "CREATE EXTENSION IF NOT 
 
 if ! grep -Eq "${HBA_RE}" "${HBA}"; then
     echo "Adding pg_hba.conf line for '${DB}' and reloading..."
-    echo "${HBA_LINE}" | sudo tee -a "${HBA}" >/dev/null
+    # pg_hba.conf is first-match: insert BEFORE the first generic
+    # "host all all" rule, or the appended line would never match.
+    sudo python3 - "${HBA}" "${HBA_LINE}" <<'EOF'
+import sys
+path, line = sys.argv[1], sys.argv[2]
+lines = open(path).read().splitlines(keepends=True)
+for i, l in enumerate(lines):
+    fields = l.split()
+    if len(fields) >= 3 and fields[0] == "host" and fields[1] == "all" and fields[2] == "all":
+        lines.insert(i, line + "\n")
+        break
+else:
+    lines.append(line + "\n")
+open(path, "w").writelines(lines)
+EOF
     sudo pg_ctlcluster 16 main reload
 fi
 

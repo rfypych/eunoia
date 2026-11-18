@@ -235,6 +235,16 @@ class Embedding(Base):
             "writeup_id", "model", "model_version",
             name="uq_embedding_writeup_model_version",
         ),
+        # HNSW ANN index (spec §5.7, Task 8): cosine distance, m=16,
+        # ef_construction=64. Declared here so Base.metadata.create_all
+        # (tests) and future autogenerate match migration 0003.
+        Index(
+            "ix_embeddings_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "halfvec_cosine_ops"},
+            postgresql_with={"m": 16, "ef_construction": 64},
+        ),
     )
 
 
