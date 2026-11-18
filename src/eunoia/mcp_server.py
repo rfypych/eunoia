@@ -53,6 +53,7 @@ from eunoia.api.status import build_status
 from eunoia.config import get_settings
 from eunoia.db import get_engine
 from eunoia.models import Writeup, WriteupVuln
+from eunoia.safety.secrets_scan import SecretFoundError
 from eunoia.search import search
 from eunoia.skills import get_skill_text
 
@@ -426,6 +427,9 @@ def build_mcp_server(
             api_id = writeup.api_id
             try:
                 skill = get_skill_text(api_id, session=session)
+            except SecretFoundError as exc:
+                # Safety refusal, not a takedown: never GONE.
+                raise McpToolError("SECRET_FOUND", str(exc))
             except ValueError as exc:
                 # Retracted / taken-down / duplicate: gone, never a 500
                 # (Ruling R10, same as the REST skill endpoint).
@@ -581,6 +585,9 @@ def build_mcp_server(
             api_id = writeup.api_id
             try:
                 skill = get_skill_text(api_id, session=session)
+            except SecretFoundError as exc:
+                # Safety refusal, not a takedown: never GONE.
+                raise McpResourceError("SECRET_FOUND", str(exc))
             except ValueError as exc:
                 raise McpResourceError("GONE", str(exc))
             session.commit()

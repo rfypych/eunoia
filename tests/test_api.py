@@ -431,6 +431,22 @@ def test_writeup_skill_md_retracted_is_gone(client, session):
     assert r.json()["error"]["code"] == "GONE"
 
 
+def test_writeup_skill_md_secret_refusal_is_503_not_410(client, session):
+    # A safety refusal is not a takedown: an active writeup whose
+    # rendered skill trips the secret scan is 503, never 410 Gone.
+    w = _writeup(
+        session,
+        url="https://example.com/reports/secret-skill",
+        title="SSRF with token ghp_" + "A" * 36,
+        excerpt="A parser fetches URLs.",
+        author="alice",
+    )
+    session.commit()
+    r = client.get(f"/v1/writeups/w_{w.id.hex}/skill.md")
+    assert r.status_code == 503
+    assert r.json()["error"]["code"] == "SECRET_FOUND"
+
+
 # --- facets -----------------------------------------------------------------
 
 def test_programs_facet(client):

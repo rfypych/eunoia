@@ -31,7 +31,12 @@ from eunoia.safety.approvals import (
 from eunoia.safety.audit import APPEND_ONLY_TRIGGER_SQL, audit_append
 from eunoia.safety.quality import detect_language, quality_gate
 from eunoia.safety.scope import Scope, ScopeBlocked, ScopeGate
-from eunoia.safety.secrets_scan import Finding, contains_secret, scan_secrets
+from eunoia.safety.secrets_scan import (
+    Finding,
+    SecretFoundError,
+    contains_secret,
+    scan_secrets,
+)
 from eunoia.safety.takedown import (
     DMCA_AGENT_EMAIL,
     DMCA_AGENT_NAME,
@@ -184,8 +189,16 @@ def test_skill_generation_refuses_secret_in_title(session):
     w = _writeup(session,
                  title="SSRF with token ghp_abcdefghij1234567890abcdefghij12")
     session.flush()
-    with pytest.raises(ValueError, match="secret"):
+    with pytest.raises(SecretFoundError, match="secret"):
         get_skill_text(w.api_id, session=session)
+
+
+def test_secret_found_error_is_not_a_value_error():
+    # The refusal must be a distinct type: the R10 status gate raises
+    # ValueError, which the serving layers map to 410 Gone. If the
+    # secret-scan refusal were a ValueError too, a safety refusal
+    # would be misreported as a takedown.
+    assert not issubclass(SecretFoundError, ValueError)
 
 
 # --- Audit (append-only) ---

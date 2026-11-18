@@ -48,6 +48,17 @@ class Finding:
     preview: str
 
 
+class SecretFoundError(Exception):
+    """A rendered text trips the secret scan and must not be served.
+
+    Deliberately NOT a ``ValueError``: the R10 status gate raises
+    ``ValueError``, which the serving layers map to 410 Gone. A
+    safety refusal is not a takedown — conflating the two would
+    misreport a held-for-review record as permanently gone and invite
+    clients to cache it as such.
+    """
+
+
 def _preview(text: str, start: int, end: int, pattern: str) -> str:
     before = text[max(0, start - _CONTEXT):start]
     after = text[end:end + _CONTEXT]

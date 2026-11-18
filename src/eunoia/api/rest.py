@@ -50,6 +50,7 @@ from eunoia.api.status import build_status
 from eunoia.config import Settings, get_settings
 from eunoia.db import get_engine
 from eunoia.models import Source, Submission, Writeup, WriteupSource, WriteupVuln
+from eunoia.safety.secrets_scan import SecretFoundError
 from eunoia.search import SearchResult, search
 from eunoia.skills import get_skill_text
 
@@ -754,11 +755,15 @@ def create_app(
         """Per-writeup SKILL.md (Task 12: ``get_skill_text``).
 
         A retracted or taken-down writeup is 410 Gone, never a skill
-        and never a 500 (Ruling R10).
+        and never a 500 (Ruling R10). A secret-scan refusal is a
+        distinct 503 SECRET_FOUND, never 410: a safety refusal is
+        not a takedown.
         """
         writeup = _get_writeup_or_404(session, raw_id)
         try:
             skill = get_skill_text(writeup.api_id, session=session)
+        except SecretFoundError as exc:
+            raise ApiError(503, "SECRET_FOUND", str(exc))
         except ValueError as exc:
             raise ApiError(410, "GONE", str(exc))
         return PlainTextResponse(skill, media_type="text/markdown")

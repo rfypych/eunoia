@@ -358,6 +358,19 @@ def test_get_writeup_skill_retracted_is_gone(mcp_client, seed):
     assert excinfo.value.code == "GONE"
 
 
+def test_get_writeup_skill_secret_refusal_is_not_gone(mcp_client, session):
+    # A safety refusal is not a takedown: the secret-scan refusal
+    # must not be mapped to GONE (410) like the R10 status gate.
+    w = _writeup(
+        session, title="SSRF with token ghp_" + "A" * 36,
+        excerpt="A parser fetches URLs.",
+        program="Acme Spring", vuln_class="SSRF", cwe="CWE-918",
+    )
+    with pytest.raises(McpToolError) as excinfo:
+        mcp_client.call("get_writeup_skill", {"id": w.api_id})
+    assert excinfo.value.code == "SECRET_FOUND"
+
+
 # --- Facets -----------------------------------------------------------------
 
 
@@ -421,6 +434,27 @@ def test_resource_writeup_skill_retracted_is_gone(mcp_client, seed):
     with pytest.raises(Exception):
         mcp_client.read_resource(
             f"writeup://{seed['retracted'].api_id}/skill")
+
+
+def test_resource_writeup_skill_secret_refusal_is_not_gone(
+        mcp_client, session):
+    # Same mapping as the tool: a secret-scan refusal surfaces as
+    # SECRET_FOUND, never GONE. The SDK may wrap the resource error,
+    # so the code is asserted anywhere in the exception chain.
+    w = _writeup(
+        session, title="SSRF with token ghp_" + "A" * 36,
+        excerpt="A parser fetches URLs.",
+        program="Acme Spring", vuln_class="SSRF", cwe="CWE-918",
+    )
+    with pytest.raises(Exception) as excinfo:
+        mcp_client.read_resource(f"writeup://{w.api_id}/skill")
+    chain = []
+    exc = excinfo.value
+    while exc is not None:
+        chain.append(str(exc))
+        exc = exc.__cause__ or exc.__context__
+    assert any("SECRET_FOUND" in part for part in chain)
+    assert not any(part.startswith("GONE") for part in chain)
 
 
 # --- Prompt -----------------------------------------------------------------

@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from eunoia.config import get_settings
 from eunoia.db import get_engine
 from eunoia.models import Writeup, WriteupVuln
-from eunoia.safety.secrets_scan import scan_secrets
+from eunoia.safety.secrets_scan import SecretFoundError, scan_secrets
 
 MAX_NAME_LEN = 64
 MAX_BODY_LINES = 500
@@ -232,7 +232,10 @@ def get_skill_text(writeup_id: str | uuid.UUID,
     Raises ``ValueError`` for an unknown id and for a writeup whose
     status is not ``active``/``updated``: a retracted or taken-down
     disclosure is removed from serving and kept only as a stub
-    (Ruling R10), so no skill is generated for it.
+    (Ruling R10), so no skill is generated for it. Raises
+    ``SecretFoundError`` (a distinct type, not ``ValueError``) when
+    the rendered skill trips the secret scan, so serving layers do
+    not misreport the safety refusal as 410 Gone.
     """
     own_session = session is None
     if own_session:
@@ -252,7 +255,7 @@ def get_skill_text(writeup_id: str | uuid.UUID,
         # a title or field must never be served as a skill.
         findings = scan_secrets(text)
         if findings:
-            raise ValueError(
+            raise SecretFoundError(
                 f"skill for writeup {writeup.api_id} contains a "
                 f"possible secret ({findings[0].pattern}); refusing to serve"
             )
