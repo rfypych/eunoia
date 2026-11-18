@@ -25,7 +25,7 @@ from eunoia.config import get_settings
 from eunoia.db import get_engine
 from eunoia.ingestion.hackerone import handle_discovery_job
 from eunoia.ingestion.jobs import dispatch_job, enqueue_discovery, process_job
-from eunoia.ingestion.nvd import NVD_API_URL, TokenBucket
+from eunoia.ingestion.nvd import NVD_API_URL, NvdError, NvdRateLimitedError, TokenBucket
 from eunoia.models import Base, CveCache, Embedding, Job, Source, Writeup, WriteupEvent, WriteupVuln
 
 TEST_DATABASE_URL = "postgresql://eunoia@localhost:5432/eunoia_test"
@@ -314,3 +314,60 @@ def test_process_job_with_dispatch_marks_nvd_refresh_done(session, http_client, 
     done = session.get(Job, job.id)
     assert done.status == "done"
     assert session.get(CveCache, CVE_ID) is not None
+
+
+def test_nvd_refresh_429_is_retried_not_consumed(session, http_client, limiter):
+    # Ruling R8: a degraded refresh must raise so process_job retries
+    # with back-off, not mark the job done (the nvd:<cve> idempotency
+    # key can never be queued again, so a consumed failure would leave
+    # the stale row unrefreshed forever).
+    from datetime import datetime, timedelta, timezone
+
+    session.add(
+        CveCache(
+            cve_id=CVE_ID,
+            cvss_score=10.0,
+            cvss_vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H",
+            cwe_ids=["CWE-917", "CWE-502"],
+            fetched_at=datetime.now(timezone.utc) - timedelta(days=2),
+            expires_at=datetime.now(timezone.utc) - timedelta(days=1),
+        )
+    )
+    session.commit()
+    job = Job(
+        kind="nvd_refresh", source_id=None,
+        idempotency_key=f"nvd:{CVE_ID}", payload={"cve_id": CVE_ID},
+        status="pending",
+    )
+    session.add(job)
+    session.flush()
+    with respx.mock as router:
+        router.get(NVD_API_URL).mock(return_value=Response(429, json={}))
+        with pytest.raises(NvdRateLimitedError):
+            process_job(session, job.id, partial(dispatch_job, client=http_client, limiter=limiter))
+    retried = session.get(Job, job.id)
+    assert retried.status == "pending"  # not "done"
+    assert retried.attempts == 1
+    assert retried.next_attempt_at is not None
+    assert retried.next_attempt_at > datetime.now(timezone.utc)
+
+
+def test_nvd_refresh_404_raises_and_retries(session, http_client, limiter):
+    # Ruling R8: a 404 (unknown to NVD) fetches no fresh data, so the
+    # handler raises — the failure is visible (retry, then dead-letter)
+    # instead of silently consuming the job.
+    job = Job(
+        kind="nvd_refresh", source_id=None,
+        idempotency_key=f"nvd:{CVE_ID}", payload={"cve_id": CVE_ID},
+        status="pending",
+    )
+    session.add(job)
+    session.flush()
+    with respx.mock as router:
+        router.get(NVD_API_URL).mock(return_value=Response(404, json={}))
+        with pytest.raises(NvdError):
+            process_job(session, job.id, partial(dispatch_job, client=http_client, limiter=limiter))
+    retried = session.get(Job, job.id)
+    assert retried.status == "pending"  # not "done"
+    assert retried.attempts == 1
+    assert session.get(CveCache, CVE_ID) is None

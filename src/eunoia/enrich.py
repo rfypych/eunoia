@@ -43,11 +43,34 @@ def handle_nvd_refresh_job(
     The job payload carries ``{"cve_id": ...}`` (queued by
     :func:`enrich_cve` when a fetch degraded). Raises ``ValueError``
     when the payload has no CVE id. ``dispatch_job`` routes to this.
+
+    Raises when the fetch did not succeed (Ruling R8): ``enrich_cve``
+    never raises on NVD failure — on 429 it serves stale cache
+    (``stale=True``) and on 404 it returns an empty record — so a
+    handler that returned normally would let ``process_job`` mark the
+    job ``done`` while the ``nvd:<cve>`` idempotency key can never be
+    queued again, leaving the stale row unrefreshed forever. Raising
+    makes ``process_job`` retry with back-off instead; genuine 404s
+    retry, then dead-letter visibly, rather than vanishing silently.
     """
     cve_id = (job.payload or {}).get("cve_id")
     if not cve_id:
         raise ValueError(f"nvd_refresh job {job.id} has no cve_id in payload")
-    return enrich_cve(str(cve_id), session=session, client=client, limiter=limiter)
+    cve_id = str(cve_id).strip().upper()
+    record = enrich_cve(cve_id, session=session, client=client, limiter=limiter)
+    if record.stale:
+        raise NvdRateLimitedError(
+            f"nvd_refresh for {cve_id} degraded to stale cache; retrying"
+        )
+    row = session.get(CveCache, cve_id)
+    if (
+        row is None
+        or row.expires_at is None
+        or row.expires_at <= datetime.now(timezone.utc)
+    ):
+        # No fresh data was fetched or stored (e.g. NVD 404: unknown CVE).
+        raise NvdError(f"nvd_refresh for {cve_id} fetched no fresh data; retrying")
+    return record
 
 CACHE_TTL = timedelta(days=1)
 
