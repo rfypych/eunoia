@@ -82,6 +82,9 @@ class Writeup(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid7)
     canonical_url: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     url_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    # Platform external id (e.g. "hackerone:689314") — layer 2 dedup key for
+    # persisted rows (migration 0002). Nullable: not every source has one.
+    external_id: Mapped[str | None] = mapped_column(String(128), index=True)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     excerpt: Mapped[str | None] = mapped_column(String(300))
     author_name: Mapped[str | None] = mapped_column(Text)

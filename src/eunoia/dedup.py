@@ -12,8 +12,25 @@ Layer order (strongest first):
    auto-merge key.
 
 Cross-posting is not duplication: one logical writeup, many ``source_urls``.
-Records here are dicts or ``Writeup``-like objects; fields are read by key
-first, then by attribute, so callers can pass either shape.
+
+Input shapes supported: plain dicts AND ``Writeup`` model objects — fields
+are read by key first, then by attribute, so callers (e.g. the Task 5 worker
+upsert, which compares a candidate against persisted DB rows) can pass
+either shape.
+
+Layers 3–4 work two ways. When both records carry text (``text`` /
+``content`` / ``normalized_text``), the text is hashed / SimHashed on the
+fly. When no text is present — the normal case for persisted ``Writeup``
+rows, whose full text is never stored — the stored fields are compared
+instead: equal ``content_hash`` → ``"content"``, and stored ``simhash``
+values with Hamming distance <= 3 → ``"near_dup_review"``. Mixed shapes
+(one side text, the other side stored hashes) are compared the same way.
+``excerpt`` is deliberately NOT used as the text: it is a <=300-char
+truncated field, not the normalized text the content hash is defined over.
+
+Boilerplate stripping remains the parser's job: ``normalize_text`` only
+lowercases and collapses whitespace; the caller must strip site boilerplate
+(nav/footer chrome) before hashing.
 """
 
 from __future__ import annotations
@@ -178,6 +195,30 @@ def dedup_decision(existing: Any, candidate: Any) -> DedupDecision:
         if content_hash(text_a) == content_hash(text_b):
             return "content"
         if hamming_distance(simhash64(text_a), simhash64(text_b)) <= NEAR_DUP_HAMMING_MAX:
+            return "near_dup_review"
+
+    # Stored-field fallback (layers 3-4 for persisted Writeup rows, which
+    # carry no text): compare content_hash / simhash directly, or cross
+    # one side's text against the other side's stored hash.
+    hash_a = _get(existing, "content_hash")
+    hash_b = _get(candidate, "content_hash")
+    if hash_a and hash_b and str(hash_a) == str(hash_b):
+        return "content"
+    if text_a and hash_b and content_hash(text_a) == str(hash_b):
+        return "content"
+    if text_b and hash_a and content_hash(text_b) == str(hash_a):
+        return "content"
+
+    sim_a = _get(existing, "simhash")
+    sim_b = _get(candidate, "simhash")
+    if sim_a is not None and sim_b is not None:
+        if hamming_distance(int(sim_a), int(sim_b)) <= NEAR_DUP_HAMMING_MAX:
+            return "near_dup_review"
+    if text_a and sim_b is not None:
+        if hamming_distance(simhash64(text_a), int(sim_b)) <= NEAR_DUP_HAMMING_MAX:
+            return "near_dup_review"
+    if text_b and sim_a is not None:
+        if hamming_distance(int(sim_a), simhash64(text_b)) <= NEAR_DUP_HAMMING_MAX:
             return "near_dup_review"
 
     if _same_title_author_date(existing, candidate):

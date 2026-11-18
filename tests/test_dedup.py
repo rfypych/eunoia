@@ -17,6 +17,43 @@ from eunoia.dedup import (
     simhash64,
     url_hash,
 )
+from eunoia.models import Writeup
+
+
+def _writeup(url: str, **kwargs) -> Writeup:
+    """Real Task 3 Writeup object (in-memory, never persisted)."""
+    return Writeup(canonical_url=url, url_hash=url_hash(url), title="SSRF on Example", **kwargs)
+
+
+def test_writeup_objects_merge_by_external_id():
+    a = _writeup("https://hackerone.com/reports/689314", external_id="hackerone:689314")
+    b = _writeup("https://medium.com/@x/ssrf-abc", external_id="hackerone:689314")
+    assert dedup_decision(a, b) == "external_id"
+
+
+def test_writeup_objects_merge_by_stored_content_hash():
+    digest = content_hash("ssrf via pdf parser in a spring boot application")
+    a = _writeup("https://example.com/a", content_hash=digest)
+    b = _writeup("https://example.com/b", content_hash=digest)
+    assert dedup_decision(a, b) == "content"
+
+
+def test_writeup_objects_near_dup_by_stored_simhash():
+    base = (
+        "ssrf via pdf parser in a spring boot application running on tomcat "
+        "the parser fetched a remote url and returned internal metadata"
+    )
+    changed = base.replace("tomcat", "jetty")
+    assert hamming_distance(simhash64(base), simhash64(changed)) <= NEAR_DUP_HAMMING_MAX
+    a = _writeup("https://example.com/a", simhash=simhash64(base))
+    b = _writeup("https://example.com/b", simhash=simhash64(changed))
+    assert dedup_decision(a, b) == "near_dup_review"
+
+
+def test_writeup_objects_exact_by_url():
+    a = _writeup("https://hackerone.com/reports/1")
+    b = _writeup("https://hackerone.com/reports/1?utm_campaign=y")
+    assert dedup_decision(a, b) == "exact"
 
 
 def test_same_report_different_urls_merges_by_external_id():
