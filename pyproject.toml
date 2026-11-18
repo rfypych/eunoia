@@ -10,6 +10,8 @@ requires-python = ">=3.12"
 dependencies = [
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.2",
+    "alembic>=1.13",
+    "pgvector>=0.3",
 ]
 
 [project.optional-dependencies]
