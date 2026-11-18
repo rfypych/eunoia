@@ -751,11 +751,17 @@ def create_app(
 
     @app.get("/v1/writeups/{raw_id}/skill.md")
     def writeup_skill(raw_id: str, session: Session = Depends(_session)):
-        """Per-writeup SKILL.md (Task 12: ``get_skill_text``)."""
+        """Per-writeup SKILL.md (Task 12: ``get_skill_text``).
+
+        A retracted or taken-down writeup is 410 Gone, never a skill
+        and never a 500 (Ruling R10).
+        """
         writeup = _get_writeup_or_404(session, raw_id)
-        return PlainTextResponse(
-            get_skill_text(writeup.api_id, session=session),
-            media_type="text/markdown")
+        try:
+            skill = get_skill_text(writeup.api_id, session=session)
+        except ValueError as exc:
+            raise ApiError(410, "GONE", str(exc))
+        return PlainTextResponse(skill, media_type="text/markdown")
 
     @app.get("/v1/writeups/{raw_id}")
     def get_writeup(raw_id: str, session: Session = Depends(_session)):

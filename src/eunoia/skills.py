@@ -226,13 +226,24 @@ def _own_session() -> Session:
 
 def get_skill_text(writeup_id: str | uuid.UUID,
                    session: Session | None = None) -> str:
-    """Per-writeup SKILL.md text for one writeup id."""
+    """Per-writeup SKILL.md text for one writeup id.
+
+    Raises ``ValueError`` for an unknown id and for a writeup whose
+    status is not ``active``/``updated``: a retracted or taken-down
+    disclosure is removed from serving and kept only as a stub
+    (Ruling R10), so no skill is generated for it.
+    """
     own_session = session is None
     if own_session:
         session = _own_session()
     assert session is not None
     try:
         writeup = _resolve_writeup(writeup_id, session)
+        if writeup.status not in ("active", "updated"):
+            raise ValueError(
+                f"writeup {writeup.api_id} is {writeup.status}; "
+                "retracted or taken-down content is not served"
+            )
         vuln = _first_vuln(session, writeup.id)
         return _render_writeup_skill(writeup, vuln)
     finally:

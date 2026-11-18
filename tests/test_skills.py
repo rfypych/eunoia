@@ -58,7 +58,8 @@ def session():
 
 def _writeup(session, *, title, excerpt=None, vuln_class=None, cwe=None,
              cve=None, external_id=None, program=None, severity=None,
-             bounty_verified=False, days_ago=5, content_hash=None):
+             bounty_verified=False, days_ago=5, content_hash=None,
+             status="active"):
     """Insert one writeup + its first vuln row; returns the Writeup."""
     url = f"https://example.com/reports/{uuid.uuid4().hex[:12]}"
     published = NOW - timedelta(days=days_ago)
@@ -69,7 +70,7 @@ def _writeup(session, *, title, excerpt=None, vuln_class=None, cwe=None,
         title=title,
         excerpt=excerpt,
         language="en",
-        status="active",
+        status=status,
         published_at=published,
         disclosed_at=published,
         fetched_at=NOW,
@@ -158,6 +159,34 @@ def test_skill_regenerates_when_writeup_changes(session, ssrf_writeup):
 def test_skill_unknown_writeup_raises(session):
     with pytest.raises(ValueError):
         get_skill_text("w_00000000000000000000000000000000", session=session)
+
+
+@pytest.mark.parametrize("status", ["retracted", "takedown"])
+def test_skill_retracted_or_takedown_writeup_raises(session, status):
+    # Ruling R10: a retracted or taken-down disclosure is removed from
+    # serving and kept only as a stub — no skill is generated for it.
+    w = _writeup(
+        session,
+        title="RCE in old plugin",
+        vuln_class="RCE",
+        cwe="CWE-94",
+        status=status,
+    )
+    with pytest.raises(ValueError):
+        get_skill_text(w.api_id, session=session)
+
+
+def test_skill_updated_writeup_still_serves(session):
+    w = _writeup(
+        session,
+        title="SSRF via PDF parser in Spring Boot",
+        vuln_class="SSRF",
+        cwe="CWE-918",
+        external_id="hackerone:689314",
+        status="updated",
+    )
+    s = get_skill_text(w.api_id, session=session)
+    assert s.splitlines()[1].startswith("name: ssrf-")
 
 
 def test_skill_name_falls_back_without_external_id(session):

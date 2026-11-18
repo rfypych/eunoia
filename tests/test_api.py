@@ -419,6 +419,18 @@ def test_writeup_skill_md_returns_skill(client, session):
     assert "berlatih dengan aman" in r.text
 
 
+def test_writeup_skill_md_retracted_is_gone(client, session):
+    # Ruling R10: a retracted disclosure is removed from serving —
+    # 410 Gone, never a skill and never a 500.
+    w = session.execute(
+        text("SELECT id FROM writeups WHERE canonical_url = "
+             "'https://hackerone.com/reports/700002'")
+    ).first()
+    r = client.get(f"/v1/writeups/w_{w[0].hex}/skill.md")
+    assert r.status_code == 410
+    assert r.json()["error"]["code"] == "GONE"
+
+
 # --- facets -----------------------------------------------------------------
 
 def test_programs_facet(client):
