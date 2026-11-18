@@ -266,6 +266,31 @@ def test_limit_above_ten_clamped(keyed_client):
     assert len(r.json()["results"]) <= 10
 
 
+def test_search_lookup_mid_test_uses_mid_test_ranking(keyed_client):
+    """Final review I1: Lookup #2 is reachable from REST via
+    ``?lookup=mid_test``; the response reports the lookup and the
+    breakdown carries the mid-test technique_similarity component."""
+    r = keyed_client.get("/v1/search?q=ssrf&lookup=mid_test")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["lookup"] == "mid_test"
+    assert body["results"], "mid-test search must return results"
+    assert "technique_similarity" in body["results"][0]["score_breakdown"]
+
+
+def test_search_lookup_pre_test_is_default(keyed_client):
+    r = keyed_client.get("/v1/search?q=ssrf")
+    assert r.status_code == 200
+    assert r.json()["lookup"] == "pre_test"
+    assert "technique_similarity" not in r.json()["results"][0]["score_breakdown"]
+
+
+def test_search_lookup_unknown_is_rejected(keyed_client):
+    r = keyed_client.get("/v1/search?q=ssrf&lookup=night_test")
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
 # --- rate limiting ----------------------------------------------------------
 
 def test_rate_limit_429_with_envelope_and_retry_after(session):
@@ -304,8 +329,29 @@ def test_writeups_default_status_active_only(client):
     assert all(row["status"] == "active" for row in body["items"])
 
 
-def test_writeups_status_filter_can_show_retracted(client):
+def test_writeups_status_filter_retracted_is_rejected(client):
+    """Final review C1: the public list endpoint serves only servable
+    rows. ``status=retracted`` used to return the retracted row with
+    its full excerpt to anonymous callers; it is now a 400, and the
+    review-queue query surface does not live on the public API."""
     r = client.get("/v1/writeups?status=retracted")
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "VALIDATION_ERROR"
+    for status in ("takedown", "duplicate_of"):
+        r = client.get(f"/v1/writeups?status={status}")
+        assert r.status_code == 400, status
+
+
+def test_writeups_status_filter_updated_is_served(client, session):
+    """``status=updated`` is servable, so it stays listable."""
+    from eunoia.models import Writeup
+
+    w = session.query(Writeup).filter_by(
+        canonical_url="https://hackerone.com/reports/700001").one()
+    w.status = "updated"
+    session.commit()
+    r = client.get("/v1/writeups?status=updated")
+    assert r.status_code == 200
     assert r.json()["total"] == 1
 
 
@@ -349,6 +395,40 @@ def test_writeups_page_pagination(client):
     r = client.get("/v1/writeups?page=2&per_page=2").json()
     assert len(r["items"]) == 1
     assert r["total"] == 3
+
+
+def test_writeups_malformed_cursor_is_400_not_500(client):
+    """Final review I6: a cursor whose "v" array is shorter than the
+    sort keys used to raise IndexError in _keyset_condition (500)."""
+    import base64
+    import json as _json
+
+    raw = base64.urlsafe_b64encode(
+        _json.dumps({"v": [], "id": "0" * 32}).encode()
+    ).decode().rstrip("=")
+    r = client.get(f"/v1/writeups?cursor={raw}")
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_facets_exclude_quarantined_writeups(client, session):
+    """Final review I2 (REST facets): a quality-quarantined row
+    (quality_passed=False) appears in no facet list."""
+    from eunoia.models import Writeup
+
+    w = session.query(Writeup).filter_by(
+        canonical_url="https://hackerone.com/reports/689314").one()
+    w.quality_passed = False
+    session.commit()
+    programs = client.get("/v1/programs").json()["items"]
+    assert not any(p["name"] == "Acme" for p in programs)
+    classes = client.get("/v1/vuln-classes").json()["items"]
+    # SSRF still appears via the other (servable) SSRF row, but its
+    # count drops from 2 to 1 once the quarantined row is excluded.
+    ssrf = next(c for c in classes if c["vuln_class"] == "SSRF")
+    assert ssrf["writeup_count"] == 1
+    authors = client.get("/v1/authors").json()["items"]
+    assert not any(a["name"] == "alice" for a in authors)
 
 
 def test_writeups_per_page_capped_at_100(client):

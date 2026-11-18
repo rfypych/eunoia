@@ -162,6 +162,68 @@ def test_run_poll_cycle_with_no_due_jobs_processes_zero(
     assert result == {"processed": 0, "failed": 0}
 
 
+def test_run_poll_cycle_survives_poll_failure_and_still_drains(
+    session, hackerone_source, http_client, limiter
+):
+    """Final review C2: a poll exception must not kill the cycle —
+    the due jobs are still drained and the result is reported."""
+    job = enqueue_discovery(session, source_id="hackerone", event=_rich_event())
+    session.commit()
+    stub = StubEncoder()
+
+    def _failing_poll(s):
+        raise RuntimeError("HackerOne 503")
+
+    with respx.mock as router:
+        _mock_nvd_200(router)
+        result = run_poll_cycle(
+            session, poll_fn=_failing_poll,
+            model=stub, url_checker=lambda url: True,
+            client=http_client, limiter=limiter)
+    assert result["processed"] == 1
+    assert result["failed"] == 0
+    assert session.get(Job, job.id).status == "done"
+
+
+def test_main_poll_loop_survives_failed_cycle(monkeypatch):
+    """Final review C2: main's poll loop catches a failed cycle
+    (log, sleep, continue) instead of crashing the process."""
+    import eunoia.worker as worker_mod
+
+    calls = {"cycles": 0}
+
+    def _failing_cycle(session, **kwargs):
+        calls["cycles"] += 1
+        raise RuntimeError("cycle failed")
+
+    def _ok_cycle(session, **kwargs):
+        calls["cycles"] += 1
+        return {"processed": 0, "failed": 0}
+
+    monkeypatch.setattr(worker_mod, "run_poll_cycle", _failing_cycle)
+    monkeypatch.setattr(worker_mod, "_open_session",
+                        lambda: _DummySession())
+
+    def _stop_sleep(seconds):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(worker_mod.time, "sleep", _stop_sleep)
+    with pytest.raises(KeyboardInterrupt):
+        worker_mod.main(["poll-loop", "--interval-minutes", "15"])
+    assert calls["cycles"] == 1
+
+
+class _DummySession:
+    """Minimal context manager standing in for a DB session in the
+    main-loop test (the cycle itself is monkeypatched away)."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
 def test_run_kev_sync_once_calls_sync(session):
     calls = []
     result = run_kev_sync_once(

@@ -34,7 +34,7 @@
     "expected_writeup_ids": [
       "w_019a0000000070008000000000000003"
     ],
-    "notes": "Spring Boot IDOR (no embedding row: keyword-only retrieval)."
+    "notes": "Spring Boot IDOR (no CVE attached; retrieval via title/excerpt keywords)."
   },
   {
     "id": "q04",

@@ -286,3 +286,60 @@ def test_llms_txt_empty_registry_still_valid(session):
     assert s.startswith("# Eunoia")
     assert "## Top writeups" in s
     assert "No writeups indexed yet." in s
+
+
+def test_skill_name_no_double_hyphen_when_title_equals_class(session):
+    """Final review triage, Task 12: a writeup titled exactly "SSRF"
+    used to produce the skill name "ssrf--h1-689314" (empty title
+    segment joined as a double hyphen)."""
+    from eunoia.skills import skill_name
+
+    w = _writeup(
+        session, title="SSRF", vuln_class="SSRF", cwe="CWE-918",
+        external_id="hackerone:689314",
+    )
+    vuln = session.query(WriteupVuln).filter_by(writeup_id=w.id).one()
+    assert skill_name(w, vuln) == "ssrf-h1-689314"
+
+
+def test_quarantined_writeup_in_no_serving_surface(session, ssrf_writeup):
+    """Final review I2: a quarantined writeup (quality_passed=False)
+    appears in none of the serving surfaces — llms.txt Top writeups
+    or the class skill list."""
+    ssrf_writeup.quality_passed = False
+    session.flush()
+    assert "SSRF via PDF parser in Spring Boot" not in render_llms_txt(
+        session=session)
+    with pytest.raises(ValueError):
+        get_vuln_class_skill("SSRF", session=session)
+
+
+def test_updated_writeup_in_llms_and_class_skill(session, ssrf_writeup):
+    """Final review I2: an "updated" row is servable, so it appears in
+    llms.txt Top writeups and the class skill (the old filter was
+    status == "active" only)."""
+    ssrf_writeup.status = "updated"
+    session.flush()
+    assert "SSRF via PDF parser in Spring Boot" in render_llms_txt(
+        session=session)
+    assert "SSRF via PDF parser in Spring Boot" in get_vuln_class_skill(
+        "SSRF", session=session)
+
+
+def test_multi_vuln_row_writeup_listed_once(session, ssrf_writeup):
+    """Final review triage, Task 12: a writeup with several vuln rows
+    joins once per row — llms.txt Top writeups and the class skill
+    must list it exactly once."""
+    session.add(WriteupVuln(
+        writeup_id=ssrf_writeup.id,
+        vuln_class="SSRF",
+        cwe_id="CWE-918",
+        cve_id="CVE-2022-22965",
+        severity="critical",
+        bounty_verified=True,
+    ))
+    session.flush()
+    top = render_llms_txt(session=session)
+    assert top.count("SSRF via PDF parser in Spring Boot") == 1
+    skill = get_vuln_class_skill("SSRF", session=session)
+    assert skill.count("SSRF via PDF parser in Spring Boot") == 1

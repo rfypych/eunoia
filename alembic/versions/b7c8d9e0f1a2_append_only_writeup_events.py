@@ -10,7 +10,23 @@ from typing import Sequence, Union
 
 from alembic import op
 
-from eunoia.safety.audit import APPEND_ONLY_TRIGGER_SQL
+# The trigger SQL is inlined here (final review triage, Task 13):
+# a migration must not import app code — the SQL it applies has to
+# be self-contained, as migration 0006 already is. The same literal
+# stays in eunoia.safety.audit (APPEND_ONLY_TRIGGER_SQL) for tests.
+APPEND_ONLY_TRIGGER_SQL = """
+CREATE OR REPLACE FUNCTION eunoia_prevent_writeup_events_mutation()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'writeup_events is append-only: % is not allowed', TG_OP;
+    RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS writeup_events_append_only ON writeup_events;
+CREATE TRIGGER writeup_events_append_only
+BEFORE UPDATE OR DELETE ON writeup_events
+FOR EACH ROW EXECUTE FUNCTION eunoia_prevent_writeup_events_mutation();
+"""
 
 
 # revision identifiers, used by Alembic.

@@ -28,7 +28,7 @@ from eunoia.config import get_settings
 from eunoia.db import get_engine
 from eunoia.models import Writeup, WriteupVuln
 from eunoia.safety.secrets_scan import SecretFoundError, scan_secrets
-from eunoia.safety.serving import ensure_servable
+from eunoia.safety.serving import ensure_servable, servable_filter
 
 MAX_NAME_LEN = 64
 MAX_BODY_LINES = 500
@@ -155,11 +155,16 @@ def skill_name(writeup: Writeup, vuln: WriteupVuln | None) -> str:
     title_slug = _slugify(writeup.title)
     if title_slug.startswith(vuln_class + "-"):
         title_slug = title_slug[len(vuln_class) + 1:]
-    name = "-".join([
-        vuln_class,
-        title_slug,
-        _platform_suffix(writeup),
-    ])
+    if title_slug == vuln_class:
+        # Title identical to the class name ("SSRF" for an SSRF
+        # writeup): dropping the duplicate leaves an empty segment,
+        # which used to join as a double hyphen ("ssrf--h1-689314").
+        title_slug = ""
+    name = "-".join(
+        segment for segment in
+        [vuln_class, title_slug, _platform_suffix(writeup)]
+        if segment
+    )
     return name[:MAX_NAME_LEN].rstrip("-")
 
 
@@ -369,7 +374,11 @@ def get_registry_skill() -> str:
         "per technology in the target stack, limit 5 per technology, "
         "about 1000 to 1500 tokens per query. Lookup #2 runs mid-test, "
         "only when stuck or when a candidate needs verification: limit 3, "
-        "at most 2 re-queries per hypothesis. Never use limit 20 inside "
+        "at most 2 re-queries per hypothesis. For Lookup #2 pass "
+        "mid_test=true to search_writeups (or lookup=mid_test on "
+        "GET /v1/search) — that selects the mid-test ranking, which "
+        "weighs technique similarity; without it every search uses "
+        "the pre-test ranking. Never use limit 20 inside "
         "the loop.",
         "",
         "## Token limits",
@@ -406,13 +415,22 @@ def get_vuln_class_skill(vuln_class: str,
             select(Writeup, WriteupVuln)
             .join(WriteupVuln, WriteupVuln.writeup_id == Writeup.id)
             .where(WriteupVuln.vuln_class.ilike(vuln_class.strip()))
-            .where(Writeup.status == "active")
+            .where(*servable_filter())
             .order_by(
                 WriteupVuln.bounty_verified.desc(),
                 Writeup.published_at.desc().nulls_last(),
             )
             .limit(5)
         ).all()
+        # One entry per writeup: a writeup with several vuln rows in
+        # the same class joins once per row (Task 12 triage item).
+        seen: set = set()
+        deduped = []
+        for writeup, vuln in rows:
+            if writeup.id not in seen:
+                seen.add(writeup.id)
+                deduped.append((writeup, vuln))
+        rows = deduped
         if not rows:
             raise ValueError(f"no writeups in vuln class: {vuln_class!r}")
         return _render_class_skill(vuln_class, rows)

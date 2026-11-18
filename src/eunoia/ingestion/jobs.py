@@ -133,15 +133,29 @@ def mark_job_failed(session: Session, job: Job, error: str | Exception) -> None:
     session.flush()
 
 
+# Handler kwargs per job kind (wiring triage item): ``dispatch_job``
+# used to forward kwargs verbatim, so a mis-routed call (e.g. a
+# discovery encoder passed to an ``nvd_refresh`` job) made the
+# handler raise TypeError — retried 5 times, then dead-lettered. The
+# router now filters kwargs to what each handler accepts, so a
+# mis-routed call can no longer dead-letter a job.
+_HANDLER_KWARGS: dict[str, frozenset[str]] = {
+    "nvd_refresh": frozenset({"client", "limiter"}),
+    "hackerone_discovery": frozenset(
+        {"model", "client", "limiter", "url_checker"}),
+    "discovery": frozenset({"model", "client", "limiter", "url_checker"}),
+}
+
+
 def dispatch_job(session: Session, job: Job, **kwargs) -> object:
     """Route one job to its handler by ``kind``.
 
     ``"nvd_refresh"`` → :func:`eunoia.enrich.handle_nvd_refresh_job`;
     ``"hackerone_discovery"`` / ``"discovery"`` → the discovery worker.
     Unknown kinds raise ``ValueError`` so a mis-routed job fails loudly
-    instead of silently doing nothing. Extra keyword arguments
-    (``model``, ``client``, ``limiter``) are forwarded to the handler —
-    tests inject a stub encoder / mocked HTTP client this way; the
+    instead of silently doing nothing. Keyword arguments are filtered
+    to the handler's accepted set (see ``_HANDLER_KWARGS``) — tests
+    inject a stub encoder / mocked HTTP client this way; the
     production worker loop calls ``dispatch_job(session, job)`` bare.
 
     The handler imports are function-local: ``hackerone.py`` imports
@@ -150,11 +164,19 @@ def dispatch_job(session: Session, job: Job, **kwargs) -> object:
     if job.kind == "nvd_refresh":
         from eunoia.enrich import handle_nvd_refresh_job
 
-        return handle_nvd_refresh_job(session, job, **kwargs)
+        return handle_nvd_refresh_job(
+            session, job,
+            **{k: v for k, v in kwargs.items()
+               if k in _HANDLER_KWARGS["nvd_refresh"]},
+        )
     if job.kind in ("hackerone_discovery", "discovery"):
         from eunoia.ingestion.hackerone import handle_discovery_job
 
-        return handle_discovery_job(session, job, **kwargs)
+        return handle_discovery_job(
+            session, job,
+            **{k: v for k, v in kwargs.items()
+               if k in _HANDLER_KWARGS["hackerone_discovery"]},
+        )
     raise ValueError(f"unknown job kind: {job.kind!r}")
 
 

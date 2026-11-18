@@ -170,7 +170,12 @@ class LLMJudge:
             f"In scope: {action.in_scope}"
         )
         reply = (self._model_fn(prompt) or "").strip()
-        head, _, reason = reply.partition(" ")
+        # Final review triage, Task 13: split on ANY whitespace, so
+        # "APPROVE\n<reason>" is a legitimate APPROVE — partition(" ")
+        # failed closed on a newline-separated verdict.
+        parts = reply.split(None, 1)
+        head = parts[0] if parts else ""
+        reason = parts[1] if len(parts) > 1 else ""
         passed = head.upper() == "APPROVE"
         return JudgeVerdict(
             passed=passed,

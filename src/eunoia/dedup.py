@@ -89,7 +89,14 @@ def normalize_url(url: str) -> str:
     parsed = urlparse(url.strip())
     scheme = parsed.scheme.lower()
     host = parsed.hostname.lower() if parsed.hostname else ""
-    port = parsed.port
+    try:
+        port = parsed.port
+    except ValueError:
+        # Non-numeric port (e.g. "https://example.com:abc/x"):
+        # urlparse raises on .port, so the URL is unparseable as a
+        # host:port pair. Return the stripped input verbatim instead
+        # of crashing the worker (final review triage, Task 4).
+        return url.strip()
     if port is not None and not (scheme == "http" and port == 80) and not (scheme == "https" and port == 443):
         host = f"{host}:{port}"
     if parsed.username:
@@ -168,7 +175,13 @@ def _text_of(record: Any) -> str | None:
     for key in ("text", "content", "normalized_text"):
         value = _get(record, key)
         if value:
-            return str(value)
+            # Whitespace-only text normalizes to "" — treat it as no
+            # text at all, or two whitespace-only records would merge
+            # by "content" on an empty hash (final review triage,
+            # Task 4).
+            normalized = normalize_text(str(value))
+            if normalized:
+                return normalized
     return None
 
 

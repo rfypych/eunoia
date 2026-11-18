@@ -82,6 +82,24 @@ def test_normalize_url_drops_tracking_params_and_sorts_rest():
     )
 
 
+def test_normalize_url_non_numeric_port_does_not_crash():
+    """Final review triage, Task 4: urlparse raises ValueError on
+    .port for a non-numeric port; normalize_url must not crash the
+    worker on it."""
+    url = "https://example.com:abc/reports/1"
+    assert normalize_url(url) == url
+
+
+def test_whitespace_only_records_do_not_merge_by_content():
+    """Final review triage, Task 4: two records whose only text is
+    whitespace must not merge as "content" on an empty hash."""
+    a = {"canonical_url": "https://example.com/a", "text": "   ",
+         "title": "First report", "author_name": "alice"}
+    b = {"canonical_url": "https://example.com/b", "text": " \t\n ",
+         "title": "Second report", "author_name": "bob"}
+    assert dedup_decision(a, b) == "new"
+
+
 def test_url_hash_is_sha256_of_normalized_url():
     import hashlib
 

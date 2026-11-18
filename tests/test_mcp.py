@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from starlette.testclient import TestClient
 
 from eunoia.api.auth import create_api_key
+from eunoia.api.rate_limit import RateLimiter
 from eunoia.config import get_settings
 from eunoia.db import get_engine
 from eunoia.dedup import url_hash
@@ -310,6 +311,52 @@ def test_search_writeups_unknown_mode_is_rejected(mcp_client):
     assert excinfo.value.code == "INVALID_ARGUMENT"
 
 
+def test_search_writeups_mid_test_flag_uses_mid_test_ranking(mcp_client, seed):
+    """Final review I1: Lookup #2 is reachable from MCP via
+    ``mid_test=true``; the response reports the lookup and the
+    breakdown carries the mid-test technique_similarity component."""
+    res = mcp_client.call(
+        "search_writeups", {"query": "ssrf spring", "mid_test": True})
+    assert res["lookup"] == "mid_test"
+    assert res["results"], "expected the seeded SSRF writeup"
+    assert "technique_similarity" in res["results"][0]["score_breakdown"]
+
+
+def test_search_writeups_default_lookup_is_pre_test(mcp_client, seed):
+    res = mcp_client.call("search_writeups", {"query": "ssrf spring"})
+    assert res["lookup"] == "pre_test"
+    assert "technique_similarity" not in res["results"][0]["score_breakdown"]
+
+
+def test_anon_mode_rejection_consumes_no_quota(session, encoder, seed):
+    """Task 11 triage item: a rejected anonymous semantic/hybrid call
+    must not consume quota (same rule as REST Task 10). With a
+    1-request-per-minute anon limiter, the rejected hybrid call must
+    leave the one unit for the following keyword call."""
+    engine = get_engine(get_settings(DATABASE_URL=TEST_DATABASE_URL))
+    server = build_mcp_server(
+        engine=engine, model=encoder,
+        rate_limiter=RateLimiter(anon_per_minute=1, anon_per_day=1000))
+    client = McpTestClient(server)
+    with pytest.raises(McpToolError) as excinfo:
+        client.call("search_writeups", {"query": "ssrf", "mode": "hybrid"})
+    assert excinfo.value.code == "MODE_REQUIRES_KEY"
+    res = client.call("search_writeups", {"query": "ssrf spring"})
+    assert res["results"], "quota must not have been consumed by the rejection"
+
+
+def test_effective_limit_rejects_non_numeric():
+    """Task 11 triage item: a non-numeric limit is INVALID_ARGUMENT,
+    never a bare ValueError escaping as a 500."""
+    from eunoia.mcp_server import _effective_limit
+
+    assert _effective_limit(20) == 10
+    assert _effective_limit(0) == 1
+    with pytest.raises(McpToolError) as excinfo:
+        _effective_limit("abc")
+    assert excinfo.value.code == "INVALID_ARGUMENT"
+
+
 def test_search_writeups_severity_post_filter(mcp_client, seed):
     # Only the critical writeup survives a severity=critical filter.
     res = mcp_client.call(
@@ -385,6 +432,28 @@ def test_list_programs(mcp_client):
     res = mcp_client.call("list_programs", {})
     programs = {row["name"]: row["writeup_count"] for row in res["items"]}
     assert programs.get("Acme Spring") == 1
+    assert programs.get("WP Plugin Co") == 1
+
+
+def test_facets_exclude_quarantined_and_include_updated(
+    mcp_client, session, seed):
+    """Final review I2 (MCP facets): a quality-quarantined row appears
+    in no facet list, and an "updated" row is counted (the old filter
+    was status == "active" only, which excluded updated rows)."""
+    seed["ssrf"].quality_passed = False
+    seed["rce"].status = "updated"
+    session.commit()
+    classes = {
+        row["vuln_class"]: row["writeup_count"]
+        for row in mcp_client.call("list_vuln_classes", {})["items"]
+    }
+    assert classes.get("SSRF") in (None, 0)
+    assert classes.get("RCE") == 1
+    programs = {
+        row["name"]: row["writeup_count"]
+        for row in mcp_client.call("list_programs", {})["items"]
+    }
+    assert programs.get("Acme Spring") in (None, 0)
     assert programs.get("WP Plugin Co") == 1
 
 

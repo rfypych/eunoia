@@ -326,6 +326,35 @@ def test_judge_verdict_records_model_and_prompt():
     assert verdict.prompt_version == "judge-v1"
 
 
+def test_judge_accepts_newline_separated_verdict():
+    """Final review triage, Task 13: the verdict used to be parsed
+    with partition(" "), so "APPROVE\\n<reason>" failed closed as
+    DENY. Splitting on any whitespace makes it a legitimate APPROVE."""
+    from eunoia.safety.approvals import ActionKind, LLMJudge
+
+    judge = LLMJudge(lambda prompt: "APPROVE\nread-only probe, in scope")
+    verdict = judge.review(
+        Action(kind=ActionKind.EXPLOIT, target="lab.example.internal"),
+        _judge_config())
+    assert verdict.passed is True
+    assert verdict.reason == "read-only probe, in scope"
+
+
+def test_quality_gate_unknown_class_goes_to_review():
+    """Final review triage, Task 13: the "mapped" check used to
+    accept any non-empty string. An unknown class is now treated
+    like unclassified — review queue, never "pass"."""
+    result = quality_gate(
+        canonical_url="https://example.com/reports/1",
+        title="Weird bug", author_name="Researcher",
+        published_at=NOW, vuln_class="banana",
+        excerpt="Something odd happened.", language="en",
+        url_checker=_ok_url)
+    assert result.vuln_class == "unclassified"
+    assert result.needs_review is True
+    assert result.checks["vuln_class"] == "review"
+
+
 # --- Takedown ---
 
 def test_dmca_agent_is_named():

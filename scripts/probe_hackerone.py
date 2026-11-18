@@ -50,7 +50,7 @@ def main() -> None:
     observation = ""
     if status == 200:
         try:
-            items = json.loads(body).get("data", [])
+            items = json.loads(body).get("data") or []
             disclosed = sum(1 for i in items if i.get("attributes", {}).get("disclosed"))
             observation = (
                 f"\n## Observation\n\n"

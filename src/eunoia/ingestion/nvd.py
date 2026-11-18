@@ -179,7 +179,14 @@ def fetch_cve(
         raise NvdRateLimitedError(f"NVD answered 429 for {cve_id}")
     if response.status_code != 200:
         raise NvdError(f"NVD answered {response.status_code} for {cve_id}")
-    return parse_nvd_cve(response.json())
+    try:
+        # Task 7 triage item: a malformed 200 body used to raise a
+        # bare ValueError from response.json()/parse_nvd_cve, which
+        # enrich_cve did not catch — it is an NVD failure, so wrap it
+        # as NvdError and let the caller degrade to cache.
+        return parse_nvd_cve(response.json())
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise NvdError(f"NVD returned a malformed body for {cve_id}: {exc}")
 
 
 def fetch_epss(

@@ -123,6 +123,20 @@ def _queue_refresh(session: Session, cve_id: str) -> None:
     )
 
 
+def _finish(session: Session, own_session: bool) -> None:
+    """End a unit of work: commit when this call owns the session,
+    flush only when the caller owns the transaction (the ``jobs.py``
+    convention). Final review I5: ``enrich_cve`` used to commit the
+    caller's session in both the degrade and success paths, so a DB
+    error in any pipeline step poisoned the session
+    (``PendingRollbackError``) and later steps failed despite the
+    "pipeline never fails the job" claim."""
+    if own_session:
+        session.commit()
+    else:
+        session.flush()
+
+
 def enrich_cve(
     cve_id: str,
     session: Session | None = None,
@@ -160,13 +174,17 @@ def enrich_cve(
             # Degrade, never block: serve the stale row if one exists and
             # queue a refresh; without any cache there is nothing to serve.
             _queue_refresh(session, cve_id)
-            session.commit()
+            _finish(session, own_session)
             if row is not None:
                 return _record_from_row(row, stale=True)
             return _empty_record()
         if fetched is None:
-            # Unknown to NVD: return empty without caching, so a later
-            # call retries instead of serving a cached "unknown".
+            # Unknown to NVD: do not cache "unknown", so a later call
+            # retries instead of serving a cached empty record — but
+            # return the stored row when one exists (a KEV-only row
+            # must keep its kev=True flag; Task 7 triage item).
+            if row is not None:
+                return _record_from_row(row, stale=True)
             return _empty_record()
 
         epss: float | None = None
@@ -182,11 +200,15 @@ def enrich_cve(
         row.cvss_score = fetched["cvss_score"]
         row.cvss_vector = fetched["cvss_vector"]
         row.cwe_ids = fetched["cwe_ids"]
-        row.epss = epss
-        row.epss_percentile = epss_percentile
+        if include_epss:
+            # Task 7 triage item: with include_epss=False the locals
+            # above are None, and assigning them here used to wipe a
+            # stored EPSS value on every plain NVD refresh.
+            row.epss = epss
+            row.epss_percentile = epss_percentile
         row.fetched_at = now
         row.expires_at = now + CACHE_TTL
-        session.commit()
+        _finish(session, own_session)
         return _record_from_row(row)
     finally:
         if own_session:

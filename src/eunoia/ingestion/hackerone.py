@@ -40,7 +40,7 @@ import httpx
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from eunoia.classify import apply_classification
+from eunoia.classify import apply_classification, classify_vuln_class
 from eunoia.db import get_engine
 from eunoia.dedup import (
     content_hash,
@@ -54,7 +54,7 @@ from eunoia.embed import embed_writeup
 from eunoia.enrich import enrich_cve
 from eunoia.ingestion.jobs import enqueue_discovery, idempotency_key_for
 from eunoia.models import Job, Source, SourceHost, Writeup, WriteupEvent, WriteupSource, WriteupVuln
-from eunoia.safety.quality import quality_gate
+from eunoia.safety.quality import detect_language, quality_gate
 
 __all__ = [
     "HACKTIVITY_URL",
@@ -225,6 +225,12 @@ def parse_hacktivity_item(item: dict) -> dict | None:
     # normalized (lowercased) by normalize_text.
     excerpt = re.sub(r"\s+", " ", excerpt_source).strip()[:300]
     bounty = attrs.get("total_awarded_amount")
+    try:
+        # A $0 award is not a verified bounty (final review triage,
+        # Task 5): "verified" requires a positive amount.
+        bounty_verified = bounty is not None and float(bounty) > 0
+    except (TypeError, ValueError):
+        bounty_verified = False
     team = (item.get("relationships") or {}).get("team") or {}
     team_attrs = (team.get("data") or {}).get("attributes") or {}
     reporter = (item.get("relationships") or {}).get("reporter") or {}
@@ -242,8 +248,9 @@ def parse_hacktivity_item(item: dict) -> dict | None:
         "severity": attrs.get("severity_rating"),
         "bounty_amount": bounty,
         "bounty_currency": "USD" if bounty is not None else None,
-        # Platform API is the source of the number, so it is verified.
-        "bounty_verified": bounty is not None,
+        # Platform API is the source of the number, so a positive
+        # amount is verified (a $0 award is not).
+        "bounty_verified": bounty_verified,
         "program": team_attrs.get("name"),
         "author_name": reporter_attrs.get("name"),
     }
@@ -429,6 +436,68 @@ def _poll(
 # Worker: discovery job -> upserted Writeup (never blind-insert)
 # ---------------------------------------------------------------------------
 
+def _upsert_merge_vulns(session: Session, writeup: Writeup,
+                        payload: dict) -> list[str]:
+    """Upsert vuln rows for CVE/CWE values a mirror payload carries
+    that the first source lacked (final review I4).
+
+    The merge path used to update only ``last_seen_at`` and the source
+    URL, so a mirror carrying a CVE the first source lacked never got
+    a vuln row, was never enriched, never KEV-flagged, never ranked
+    on. Returns the list of newly added CVE ids; the caller runs the
+    enrichment pipeline afterwards, which enriches every vuln row's
+    CVE — including these new ones.
+    """
+    rows = session.query(WriteupVuln).filter_by(
+        writeup_id=writeup.id).all()
+    have_cves = {row.cve_id for row in rows if row.cve_id}
+    have_cwes = {row.cwe_id for row in rows if row.cwe_id}
+    severity = payload.get("severity")
+    cwe = payload.get("cwe")
+    program = payload.get("program")
+    added: list[str] = []
+    for cve_id in payload.get("cve_ids") or []:
+        if cve_id and cve_id not in have_cves:
+            session.add(WriteupVuln(
+                writeup_id=writeup.id,
+                vuln_class=classify_vuln_class([cwe]) if cwe else None,
+                cwe_id=cwe,
+                cve_id=cve_id,
+                severity=severity if severity in _SEVERITIES else None,
+                severity_source="hackerone" if severity in _SEVERITIES else None,
+                bounty_amount=payload.get("bounty_amount"),
+                bounty_currency=payload.get("bounty_currency"),
+                bounty_verified=bool(payload.get("bounty_verified")),
+                verified_against="hackerone" if payload.get("bounty_verified") else None,
+                program=program,
+                program_slug=_slugify(program) if program else None,
+            ))
+            have_cves.add(cve_id)
+            added.append(cve_id)
+    if cwe and cwe not in have_cwes and not added:
+        # No new CVE row was added, so nothing in this merge carries
+        # the payload's CWE yet: surface it as a CWE-only row. (When
+        # CVE rows WERE added above they already carry this CWE, so a
+        # second row would duplicate it. The old condition was
+        # `not rows`, which missed a new CWE on a writeup that already
+        # had vuln rows from the first source.)
+        session.add(WriteupVuln(
+            writeup_id=writeup.id,
+            vuln_class=classify_vuln_class([cwe]),
+            cwe_id=cwe,
+            cve_id=None,
+            severity=severity if severity in _SEVERITIES else None,
+            severity_source="hackerone" if severity in _SEVERITIES else None,
+            bounty_amount=payload.get("bounty_amount"),
+            bounty_currency=payload.get("bounty_currency"),
+            bounty_verified=bool(payload.get("bounty_verified")),
+            verified_against="hackerone" if payload.get("bounty_verified") else None,
+            program=program,
+            program_slug=_slugify(program) if program else None,
+        ))
+    return added
+
+
 def handle_discovery_job(
     session: Session,
     job: Job,
@@ -478,6 +547,7 @@ def handle_discovery_job(
     if matched is not None and decision in _MERGE_DECISIONS:
         matched.last_seen_at = now
         _add_source_url(session, matched.id, job.source_id, canonical_url)
+        _upsert_merge_vulns(session, matched, payload)
         writeup, outcome = matched, "merged"
         detail: dict[str, Any] = {"dedup": decision, "merged_source_url": canonical_url}
     else:
@@ -497,9 +567,18 @@ def handle_discovery_job(
             last_seen_at=now,
             content_hash=candidate["content_hash"],
             simhash=simhash_to_db(candidate["simhash"]),
-            # Hacktivity reports are English; language detection is the
-            # Task 13 quality gate, not the poller.
-            language="en",
+            # Final review I3: detect the language from title/excerpt
+            # instead of hardcoding "en" — the quality gate only
+            # detects when the stored value is None, so a hardcoded
+            # "en" made detect_language dead in the production path
+            # and let non-English reports enter ranking as English.
+            # detect_language returns None when it cannot tell; the
+            # gate then treats the record as needing review, and the
+            # search filter keeps language NULL rows retrievable.
+            language=detect_language(
+                payload.get("title") or "",
+                payload.get("excerpt") or "",
+            ),
             status="active",
         )
         session.add(writeup)
@@ -571,7 +650,12 @@ def _run_enrichment_pipeline(
     errors: list[str] = []
     vuln_class: str | None = None
     try:
-        vuln_row = apply_classification(session, writeup)
+        # Final review I5: each step runs inside a SAVEPOINT, so a DB
+        # error in one step rolls back only that step — the session
+        # stays usable for the later steps instead of failing every
+        # subsequent flush with PendingRollbackError.
+        with session.begin_nested():
+            vuln_row = apply_classification(session, writeup)
         vuln_class = vuln_row.vuln_class
     except Exception as exc:
         errors.append(f"classification: {exc}")
@@ -605,12 +689,14 @@ def _run_enrichment_pipeline(
             cve_ids.append(row.cve_id)
     for cve_id in cve_ids:
         try:
-            enrich_cve(cve_id, session=session, client=client, limiter=limiter)
+            with session.begin_nested():
+                enrich_cve(cve_id, session=session, client=client, limiter=limiter)
             enriched.append(cve_id)
         except Exception as exc:
             errors.append(f"enrich {cve_id}: {exc}")
     try:
-        embed_result = embed_writeup(writeup.id, session=session, model=model)
+        with session.begin_nested():
+            embed_result = embed_writeup(writeup.id, session=session, model=model)
     except Exception as exc:
         embed_result = "failed"
         errors.append(f"embed: {exc}")

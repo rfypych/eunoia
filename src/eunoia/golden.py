@@ -117,51 +117,93 @@ def load_expected() -> dict[str, list[str]]:
 def seed_golden_corpus(session: Session, model=None) -> dict:
     """Seed the golden corpus into ``session``; idempotent, flush-only.
 
-    Rows are skipped when a writeup with the same id already exists
-    (re-seeding is a no-op for that row). Embeddings are written for
-    servable rows only (active + English); ``embed_writeup`` skips
-    when the template hash is unchanged, so re-seeding is cheap.
-    The caller owns the transaction (commit/rollback).
+    A row whose id already exists is UPSERTED: changed fields are
+    updated (final review triage, Task 15 — the old code skipped
+    existing ids without updating, so editing ``corpus.json`` after
+    a first seed silently left stale rows). Embeddings are written
+    for servable rows only (active + English); ``embed_writeup``
+    skips when the template hash is unchanged, so re-seeding is
+    cheap. The caller owns the transaction (commit/rollback).
     """
     corpus = load_corpus()
     now = datetime.now(timezone.utc)
     seeded = 0
+    updated = 0
     embedded = 0
     for row in corpus["writeups"]:
         wid = uuid.UUID(row["id"])
-        if session.get(Writeup, wid) is not None:
-            continue
         published = now - timedelta(days=row["days_ago"])
-        w = Writeup(
-            id=wid,
-            canonical_url=row["canonical_url"],
-            url_hash=url_hash(row["canonical_url"]),
-            title=row["title"],
-            excerpt=row["excerpt"],
-            language=row["language"],
-            status=row["status"],
-            published_at=published,
-            disclosed_at=published,
-            fetched_at=now,
-            last_seen_at=now,
-        )
-        session.add(w)
-        session.flush()
-        session.add(WriteupVuln(
-            writeup_id=wid,
-            vuln_class=row["vuln_class"],
-            cwe_id=row["cwe_id"],
-            cve_id=row["cve_id"],
-            cvss_score=row["cvss_score"],
-            severity=row["severity"],
-            severity_source=row["severity_source"],
-            bounty_verified=row["bounty_verified"],
-            bounty_amount=row["bounty_amount"],
-            bounty_currency=row["bounty_currency"],
-            program=row["program"],
-        ))
-        session.flush()
-        seeded += 1
+        existing = session.get(Writeup, wid)
+        if existing is None:
+            w = Writeup(
+                id=wid,
+                canonical_url=row["canonical_url"],
+                url_hash=url_hash(row["canonical_url"]),
+                title=row["title"],
+                excerpt=row["excerpt"],
+                language=row["language"],
+                status=row["status"],
+                published_at=published,
+                disclosed_at=published,
+                fetched_at=now,
+                last_seen_at=now,
+            )
+            session.add(w)
+            session.flush()
+            session.add(WriteupVuln(
+                writeup_id=wid,
+                vuln_class=row["vuln_class"],
+                cwe_id=row["cwe_id"],
+                cve_id=row["cve_id"],
+                cvss_score=row["cvss_score"],
+                severity=row["severity"],
+                severity_source=row["severity_source"],
+                bounty_verified=row["bounty_verified"],
+                bounty_amount=row["bounty_amount"],
+                bounty_currency=row["bounty_currency"],
+                program=row["program"],
+            ))
+            session.flush()
+            seeded += 1
+        else:
+            existing.canonical_url = row["canonical_url"]
+            existing.url_hash = url_hash(row["canonical_url"])
+            existing.title = row["title"]
+            existing.excerpt = row["excerpt"]
+            existing.language = row["language"]
+            existing.status = row["status"]
+            existing.published_at = published
+            existing.disclosed_at = published
+            existing.last_seen_at = now
+            vuln = session.query(WriteupVuln).filter_by(
+                writeup_id=wid).first()
+            if vuln is None:
+                session.add(WriteupVuln(
+                    writeup_id=wid,
+                    vuln_class=row["vuln_class"],
+                    cwe_id=row["cwe_id"],
+                    cve_id=row["cve_id"],
+                    cvss_score=row["cvss_score"],
+                    severity=row["severity"],
+                    severity_source=row["severity_source"],
+                    bounty_verified=row["bounty_verified"],
+                    bounty_amount=row["bounty_amount"],
+                    bounty_currency=row["bounty_currency"],
+                    program=row["program"],
+                ))
+            else:
+                vuln.vuln_class = row["vuln_class"]
+                vuln.cwe_id = row["cwe_id"]
+                vuln.cve_id = row["cve_id"]
+                vuln.cvss_score = row["cvss_score"]
+                vuln.severity = row["severity"]
+                vuln.severity_source = row["severity_source"]
+                vuln.bounty_verified = row["bounty_verified"]
+                vuln.bounty_amount = row["bounty_amount"]
+                vuln.bounty_currency = row["bounty_currency"]
+                vuln.program = row["program"]
+            session.flush()
+            updated += 1
         if row["status"] == "active" and row["language"] == "en":
             embed_writeup(wid, session=session, model=model)
             embedded += 1
@@ -179,7 +221,7 @@ def seed_golden_corpus(session: Session, model=None) -> dict:
             expires_at=now + timedelta(days=1),
         ))
         session.flush()
-    return {"seeded": seeded, "embedded": embedded,
+    return {"seeded": seeded, "updated": updated, "embedded": embedded,
             "total_writeups": len(corpus["writeups"])}
 
 
@@ -251,8 +293,13 @@ def measure_recall(
                 missing_ids=missing,
             ))
         latencies = [r.latency_ms for r in per_query]
+        # Final review triage, Task 15: count only rows that are
+        # actually in corpus.json — the old count included every
+        # active writeup in the DB (e.g. rows seeded by other tests).
+        corpus_ids = [uuid.UUID(w["id"]) for w in load_corpus()["writeups"]]
         corpus_size = session.execute(
             select(func.count()).select_from(Writeup).where(
+                Writeup.id.in_(corpus_ids),
                 Writeup.status == "active")
         ).scalar_one()
         return Report(

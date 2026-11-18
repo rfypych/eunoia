@@ -214,6 +214,131 @@ def test_worker_rerun_is_idempotent(session, hackerone_source, http_client, limi
     assert len(stub.calls) == 1  # second run skipped: template hash unchanged
 
 
+def test_merge_surfaces_new_cve_from_mirror(
+    session, hackerone_source, http_client, limiter
+):
+    """Final review I4: a mirror payload carrying a CVE the first
+    source lacked must create a vuln row for it, so the CVE is
+    enriched, KEV-flagged, and ranked on — not silently dropped."""
+    job1 = enqueue_discovery(session, source_id="hackerone", event=_rich_event())
+    stub = StubEncoder()
+    with respx.mock as router:
+        _mock_nvd_200(router)
+        assert handle_discovery_job(session, job1, model=stub, client=http_client, limiter=limiter, url_checker=lambda url: True) == "created"
+    mirror = _rich_event(
+        canonical_url="https://medium.com/@x/ssrf-abc",
+        external_id="hackerone:111",
+        cve_ids=["CVE-2022-22965"],
+    )
+    job2 = enqueue_discovery(session, source_id="hackerone", event=mirror)
+    with respx.mock as router:
+        _mock_nvd_200(router)
+        assert handle_discovery_job(session, job2, model=stub, client=http_client, limiter=limiter, url_checker=lambda url: True) == "merged"
+    assert session.query(Writeup).count() == 1
+    cves = {
+        row.cve_id
+        for row in session.query(WriteupVuln).all()
+    }
+    assert cves == {"CVE-2021-44228", "CVE-2022-22965"}
+    assert session.get(CveCache, "CVE-2022-22965") is not None
+    writeup = session.query(Writeup).one()
+    event = session.query(WriteupEvent).filter_by(
+        writeup_id=writeup.id, event="updated").one()
+    assert set(event.detail["cves_enriched"]) == {
+        "CVE-2021-44228", "CVE-2022-22965"}
+
+
+def test_merge_surfaces_new_cwe_from_mirror(
+    session, hackerone_source, http_client, limiter
+):
+    """Final review I4 (self-review catch): a mirror carrying a CWE
+    the first source lacked must surface it even when the writeup
+    already has vuln rows — the old `not rows` guard only added a
+    CWE-only row when the first source left no vuln row at all."""
+    first = _rich_event(cwe="CWE-79", cve_ids=[])
+    job1 = enqueue_discovery(session, source_id="hackerone", event=first)
+    stub = StubEncoder()
+    with respx.mock as router:
+        _mock_nvd_200(router)
+        assert handle_discovery_job(session, job1, model=stub, client=http_client, limiter=limiter, url_checker=lambda url: True) == "created"
+    assert {row.cwe_id for row in session.query(WriteupVuln).all()} == {"CWE-79"}
+    mirror = _rich_event(
+        canonical_url="https://medium.com/@x/xss-abc",
+        external_id="hackerone:111",
+        cwe="CWE-918",
+        cve_ids=[],
+    )
+    job2 = enqueue_discovery(session, source_id="hackerone", event=mirror)
+    with respx.mock as router:
+        _mock_nvd_200(router)
+        assert handle_discovery_job(session, job2, model=stub, client=http_client, limiter=limiter, url_checker=lambda url: True) == "merged"
+    assert {row.cwe_id for row in session.query(WriteupVuln).all()} == {
+        "CWE-79", "CWE-918"}
+
+
+def test_worker_detects_language_instead_of_hardcoding_en(
+    session, hackerone_source, http_client, limiter
+):
+    """Final review I3: the worker detects the language from
+    title/excerpt instead of hardcoding "en" — a non-English report
+    must not enter ranking as English."""
+    indonesian = _rich_event(
+        title="SSRF pada parser PDF",
+        excerpt="Parser PDF mengambil URL tanpa validasi",
+        text="ssrf pada parser pdf",
+    )
+    job = enqueue_discovery(session, source_id="hackerone", event=indonesian)
+    stub = StubEncoder()
+    with respx.mock as router:
+        _mock_nvd_200(router)
+        assert handle_discovery_job(session, job, model=stub, client=http_client, limiter=limiter, url_checker=lambda url: True) == "created"
+    writeup = session.query(Writeup).one()
+    assert writeup.language is None  # detection could not tell: not "en"
+    event = session.query(WriteupEvent).filter_by(
+        writeup_id=writeup.id, event="created").one()
+    assert event.detail["quality_gate"]["checks"]["language"] == "review"
+
+    english = _rich_event(
+        canonical_url="https://hackerone.com/reports/222",
+        external_id="hackerone:222",
+        title="SSRF via PDF parser in the server",
+        excerpt="The server fetched the URL from the client.",
+        text="ssrf via pdf parser in the server",
+    )
+    job2 = enqueue_discovery(session, source_id="hackerone", event=english)
+    with respx.mock as router:
+        _mock_nvd_200(router)
+        assert handle_discovery_job(session, job2, model=stub, client=http_client, limiter=limiter, url_checker=lambda url: True) == "created"
+    writeup2 = session.query(Writeup).filter_by(
+        canonical_url="https://hackerone.com/reports/222").one()
+    assert writeup2.language == "en"
+
+
+def test_pipeline_step_db_error_does_not_poison_later_steps(
+    session, hackerone_source, http_client, limiter, monkeypatch
+):
+    """Final review I5: a DB error in one pipeline step must not
+    poison the session — the embed step still runs after a failed
+    enrich that left the transaction broken."""
+    import eunoia.ingestion.hackerone as h1
+    from sqlalchemy import text as _text
+
+    def _poisoned_enrich(cve_id, **kwargs):
+        kwargs["session"].execute(
+            _text("SELECT 1 FROM nonexistent_table_xyz"))
+
+    monkeypatch.setattr(h1, "enrich_cve", _poisoned_enrich)
+    job = enqueue_discovery(session, source_id="hackerone", event=_rich_event())
+    stub = StubEncoder()
+    assert handle_discovery_job(session, job, model=stub, client=http_client, limiter=limiter, url_checker=lambda url: True) == "created"
+    assert session.query(Embedding).count() == 1  # embed still ran
+    writeup = session.query(Writeup).one()
+    event = session.query(WriteupEvent).filter_by(
+        writeup_id=writeup.id, event="created").one()
+    assert len(event.detail["pipeline_errors"]) == 1
+    assert "nonexistent_table_xyz" in event.detail["pipeline_errors"][0]
+
+
 def test_enrichment_failure_does_not_fail_job(
     session, hackerone_source, http_client, monkeypatch
 ):
@@ -288,6 +413,26 @@ def test_dispatch_discovery_routes_to_worker(
         assert dispatch_job(session, job, model=stub, client=http_client, limiter=limiter, url_checker=lambda url: True) == "created"
     assert session.query(Writeup).count() == 1
     assert session.query(WriteupVuln).one().vuln_class == "SSRF"
+
+
+def test_dispatch_job_filters_kwargs_per_kind(session, http_client, limiter):
+    """Wiring triage item: dispatch_job filters kwargs to what each
+    handler accepts. A mis-routed kwarg (a discovery encoder passed
+    to an nvd_refresh job) used to raise TypeError in the handler —
+    retried 5 times, then dead-lettered."""
+    job = Job(
+        kind="nvd_refresh", source_id=None,
+        idempotency_key=f"nvd:{CVE_ID}", payload={"cve_id": CVE_ID},
+        status="pending",
+    )
+    session.add(job)
+    session.flush()
+    with respx.mock as router:
+        _mock_nvd_200(router)
+        record = dispatch_job(
+            session, job, model=StubEncoder(),
+            client=http_client, limiter=limiter)
+    assert record.cvss_score == 10.0
 
 
 def test_dispatch_unknown_kind_raises(session):
@@ -385,7 +530,18 @@ _DENY_URL = lambda url: False  # noqa: E731 - stub checker for tests
 def test_quality_gate_runs_on_discovery_job(
     session, hackerone_source, http_client, limiter
 ):
-    job = enqueue_discovery(session, source_id="hackerone", event=_rich_event())
+    # The shared fixture's title/excerpt ("SSRF via PDF parser") is too
+    # terse for the naive detector: it needs >= 2 English stopwords and
+    # the fixture has only one ("via"), so the gate would (correctly)
+    # flag language "review". A real report excerpt is longer, so this
+    # test uses a realistic one; the undetectable-language behaviour
+    # itself is covered by the I3 tests (Indonesian event -> language
+    # None + gate language "review").
+    job = enqueue_discovery(session, source_id="hackerone", event=_rich_event(
+        title="SSRF via PDF parser allows access to internal metadata endpoints",
+        excerpt="A server-side request forgery in the PDF parser allows an "
+                "attacker to read responses from internal metadata endpoints.",
+    ))
     stub = StubEncoder()
     with respx.mock as router:
         _mock_nvd_200(router)

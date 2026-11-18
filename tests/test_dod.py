@@ -18,7 +18,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-DOC = Path("docs/runbooks/dod-checklist.md")
+# Repo-root relative (final review triage, Task 16): the tests must
+# pass from any working directory, not only the repo root.
+_REPO = Path(__file__).resolve().parent.parent
+DOC = _REPO / "docs" / "runbooks" / "dod-checklist.md"
+TRANSPARENCY = _REPO / "docs" / "transparency.md"
 
 
 def _items(doc: str) -> list[tuple[bool, str]]:
@@ -61,13 +65,13 @@ def test_dod_checklist_checked_items_cite_numbers():
 
 
 def test_transparency_documents_r9_deviations():
-    doc = Path("docs/transparency.md").read_text()
+    doc = TRANSPARENCY.read_text()
     assert "/v1/..." in doc
     assert "{url, notes?}" in doc
     assert "max 10" in doc
 
 
 def test_transparency_states_what_does_not_exist_yet():
-    doc = Path("docs/transparency.md").read_text()
+    doc = TRANSPARENCY.read_text()
     assert "none yet" in doc.lower()
     assert "dmca@eunoia.example" in doc

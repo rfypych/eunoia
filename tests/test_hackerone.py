@@ -352,6 +352,17 @@ def test_parse_hacktivity_item_extracts_platform_fields():
     assert len(parsed["excerpt"]) <= 300
 
 
+def test_parse_hacktivity_item_zero_bounty_is_not_verified():
+    """Final review triage, Task 5: a $0 award is not a verified
+    bounty — "verified" requires a positive amount."""
+    parsed = parse_hacktivity_item(_item(112, "SSRF via PDF parser", awarded=0))
+    assert parsed["bounty_amount"] == 0
+    assert parsed["bounty_verified"] is False
+    parsed_none = parse_hacktivity_item(
+        _item(113, "SSRF via PDF parser", awarded=None))
+    assert parsed_none["bounty_verified"] is False
+
+
 def test_worker_creates_writeup_from_discovery_job(session, hackerone_source):
     job = enqueue_discovery(session, source_id="hackerone", event=_event())
     result = handle_discovery_job(session, job, url_checker=lambda url: True)

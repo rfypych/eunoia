@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable
 
+from eunoia.classify import VULN_CLASSES
 from eunoia.safety.secrets_scan import scan_secrets
 
 _ENGLISH_STOPWORDS = frozenset(
@@ -85,10 +86,26 @@ def quality_gate(*, canonical_url: str, title: str | None,
     checks["fields"] = "pass" if fields_ok else "fail"
 
     # (c) Vuln class mapped, else unclassified + review queue.
+    # Final review triage, Task 13: the check used to accept any
+    # non-empty string as "mapped". It now validates against the
+    # Task 6 taxonomy; an unknown class goes to review exactly like
+    # "unclassified".
     mapped_class = (vuln_class or "").strip() or None
     needs_review = False
     if mapped_class and mapped_class != "unclassified":
-        checks["vuln_class"] = "pass"
+        known = next(
+            (c for c in VULN_CLASSES if c.lower() == mapped_class.lower()),
+            None,
+        )
+        if known is not None:
+            # Membership only: the gate validates, it does not
+            # normalise. The caller's original casing is preserved so
+            # a record that arrives as "ssrf" stays "ssrf".
+            checks["vuln_class"] = "pass"
+        else:
+            mapped_class = "unclassified"
+            checks["vuln_class"] = "review"
+            needs_review = True
     else:
         mapped_class = "unclassified"
         checks["vuln_class"] = "review"

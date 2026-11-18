@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from eunoia.config import get_settings
 from eunoia.db import get_engine
 from eunoia.models import Writeup, WriteupVuln
+from eunoia.safety.serving import servable_filter
 
 TOP_WRITEUPS = 10
 
@@ -23,21 +24,39 @@ def _own_session() -> Session:
     return Session(get_engine(get_settings()))
 
 
+def _dedupe_writeups(writeups: list[Writeup]) -> list[Writeup]:
+    """One entry per writeup id, first occurrence wins (a writeup with
+    several vuln rows joins once per row — Task 12 triage item)."""
+    seen: set = set()
+    out: list[Writeup] = []
+    for writeup in writeups:
+        if writeup.id not in seen:
+            seen.add(writeup.id)
+            out.append(writeup)
+    return out
+
+
 def _top_writeups(session: Session) -> list[Writeup]:
-    """Top active writeups: verified-bounty first, then most recent."""
+    """Top servable writeups: verified-bounty first, then most recent.
+
+    Final review I2: the shared serving gate applies here — only
+    ``status in (active, updated)`` and not quality-quarantined rows
+    appear, and each writeup appears once even with several vuln rows.
+    """
     verified = session.execute(
         select(Writeup)
         .join(WriteupVuln, WriteupVuln.writeup_id == Writeup.id)
-        .where(Writeup.status == "active")
+        .where(*servable_filter())
         .where(WriteupVuln.bounty_verified.is_(True))
         .order_by(Writeup.published_at.desc().nulls_last())
         .limit(TOP_WRITEUPS)
     ).scalars().all()
+    verified = _dedupe_writeups(verified)
     seen = {w.id for w in verified}
     if len(verified) < TOP_WRITEUPS:
         recent = session.execute(
             select(Writeup)
-            .where(Writeup.status == "active")
+            .where(*servable_filter())
             .order_by(Writeup.published_at.desc().nulls_last())
             .limit(TOP_WRITEUPS)
         ).scalars().all()

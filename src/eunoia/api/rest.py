@@ -53,7 +53,12 @@ from eunoia.db import get_engine
 from eunoia.llms import render_llms_txt
 from eunoia.models import Source, Submission, Writeup, WriteupSource, WriteupVuln
 from eunoia.safety.secrets_scan import SecretFoundError
-from eunoia.safety.serving import NotServableError, ensure_servable
+from eunoia.safety.serving import (
+    SERVABLE_STATUSES,
+    NotServableError,
+    ensure_servable,
+    servable_filter,
+)
 from eunoia.search import SearchResult, search
 from eunoia.skills import get_skill_text
 
@@ -249,7 +254,7 @@ def _program(vulns: list[WriteupVuln], writeup: Writeup) -> dict | None:
 
 def _related_ids(session: Session, writeup: Writeup,
                  vulns: list[WriteupVuln]) -> list[str]:
-    """Up to 5 other active writeups sharing a CWE or vuln class."""
+    """Up to 5 other servable writeups sharing a CWE or vuln class."""
     cwes = {row.cwe_id for row in vulns if row.cwe_id}
     classes = {row.vuln_class for row in vulns if row.vuln_class}
     if not cwes and not classes:
@@ -265,7 +270,7 @@ def _related_ids(session: Session, writeup: Writeup,
             .where(or_(*conditions))
             .where(WriteupVuln.writeup_id != writeup.id)
             .join(Writeup, Writeup.id == WriteupVuln.writeup_id)
-            .where(Writeup.status == "active")
+            .where(*servable_filter())
             .order_by(Writeup.disclosed_at.desc().nulls_last())
             .limit(5)
         )
@@ -379,10 +384,12 @@ def _list_filters(
 
     A record that failed the quality gate (``quality_passed is False``)
     is never listed, whatever ``status`` filter the caller asks for
-    (Task 16 shared serving gate). An explicit ``status=retracted``
-    filter still lists retracted rows — that is the review-queue query
-    surface, pinned by Task 10 tests, not agent serving; the detail
-    endpoints below refuse those rows with 410 Gone.
+    (Task 16 shared serving gate). The public list endpoint serves
+    only servable statuses; a caller-supplied ``status`` outside the
+    servable set is rejected by the endpoint (400) before this
+    function runs (final review C1) — there is no review-queue query
+    surface on the public API. The detail endpoints refuse gated rows
+    with 410 Gone.
     """
     filters = [Writeup.status == status,
                Writeup.quality_passed.is_not(False)]
@@ -493,8 +500,16 @@ def _decode_cursor(cursor: str, kinds: list[str]) -> tuple[list, uuid.UUID]:
     try:
         padded = cursor + "=" * (-len(cursor) % 4)
         data = json.loads(base64.urlsafe_b64decode(padded).decode())
+        raw_values = data["v"]
+        if not isinstance(raw_values, list) or len(raw_values) != len(kinds):
+            # Final review I6: a short "v" array used to zip silently
+            # and raise IndexError in _keyset_condition (500). A
+            # malformed cursor is a client error, never a 500.
+            raise ApiError(
+                400, "VALIDATION_ERROR",
+                "Invalid cursor: value array does not match the sort.")
         values = []
-        for kind, value in zip(kinds, data["v"]):
+        for kind, value in zip(kinds, raw_values):
             if value is None:
                 values.append(None)
             elif kind == "dt":
@@ -502,6 +517,8 @@ def _decode_cursor(cursor: str, kinds: list[str]) -> tuple[list, uuid.UUID]:
             else:
                 values.append(float(value))
         return values, uuid.UUID(hex=data["id"])
+    except ApiError:
+        raise
     except (ValueError, KeyError, TypeError, AttributeError):
         raise ApiError(400, "VALIDATION_ERROR", "Invalid cursor.")
 
@@ -670,6 +687,15 @@ def create_app(
         if status not in _VALID_STATUSES:
             raise ApiError(
                 400, "VALIDATION_ERROR", f"Unknown status: {status!r}.")
+        if status not in SERVABLE_STATUSES:
+            # Final review C1: the public list endpoint serves only
+            # servable rows; retracted / takedown / duplicate rows are
+            # not listed with their full excerpts to anonymous callers.
+            # There is no review-queue query surface on the public API.
+            raise ApiError(
+                400, "VALIDATION_ERROR",
+                f"Status {status!r} is not served by the public list "
+                "endpoint (servable: active, updated).")
         if sort not in _VALID_SORTS:
             raise ApiError(
                 400, "VALIDATION_ERROR", f"Unknown sort: {sort!r}.")
@@ -808,10 +834,15 @@ def create_app(
         bounty_verified: bool | None = None,
         limit: int = 5,
         rerank: bool = False,
+        lookup: Literal["pre_test", "mid_test"] = "pre_test",
     ):
         """Hybrid search. Anon callers get keyword mode only; a keyed
         caller defaults to hybrid. ``limit`` is accepted up to 20 but
-        the search engine clamps to [1, 10] (Review Focus 4)."""
+        the search engine clamps to [1, 10] (Review Focus 4).
+        ``lookup`` selects the ranking: ``pre_test`` (plan a test from
+        the target stack) or ``mid_test`` (adapt mid-test on a
+        candidate / strange response — technique similarity weighs
+        in; final review I1)."""
         tier = getattr(request.state, "tier", "anon")
         effective_mode = mode or ("hybrid" if tier != "anon" else "keyword")
         if tier == "anon" and effective_mode != "keyword":
@@ -835,7 +866,7 @@ def create_app(
             "cwe": cwe,
             "cve": cve,
             "evidence_pattern": q,
-            "mode": "pre_test",
+            "mode": lookup,
         }
         try:
             results = search(
@@ -911,6 +942,7 @@ def create_app(
             "results": items,
             "total": len(items),
             "mode": effective_mode,
+            "lookup": lookup,
             "limit": min(limit, 10),
             "freshness": {
                 row["id"]: {
@@ -932,7 +964,7 @@ def create_app(
                     func.count(func.distinct(WriteupVuln.writeup_id)),
                 )
                 .join(Writeup, Writeup.id == WriteupVuln.writeup_id)
-                .where(Writeup.status == "active")
+                .where(*servable_filter())
                 .where(WriteupVuln.program.is_not(None))
                 .group_by(WriteupVuln.program, WriteupVuln.program_slug)
                 .order_by(func.count(func.distinct(WriteupVuln.writeup_id)).desc())
@@ -953,7 +985,7 @@ def create_app(
                     Writeup.author_url,
                     func.count(),
                 )
-                .where(Writeup.status == "active")
+                .where(*servable_filter())
                 .where(Writeup.author_name.is_not(None))
                 .group_by(Writeup.author_name, Writeup.author_url)
                 .order_by(func.count().desc())
@@ -975,7 +1007,7 @@ def create_app(
                     func.count(func.distinct(WriteupVuln.writeup_id)),
                 )
                 .join(Writeup, Writeup.id == WriteupVuln.writeup_id)
-                .where(Writeup.status == "active")
+                .where(*servable_filter())
                 .where(WriteupVuln.vuln_class.is_not(None))
                 .group_by(WriteupVuln.vuln_class)
                 .order_by(func.count(func.distinct(WriteupVuln.writeup_id)).desc())

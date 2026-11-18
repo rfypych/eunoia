@@ -175,6 +175,47 @@ def test_apply_creates_writeup_vuln_when_missing(session):
     assert rows[0].vuln_class == "unclassified"
 
 
+def test_apply_create_path_carries_cwe_cve_and_program(session):
+    """Final review triage, Task 6: the create path used to lose the
+    CWE/CVE (it re-read them from the bare writeup) and omitted the
+    program. The values derived for classification are now carried
+    through to the created row."""
+    import types
+
+    w = _writeup(title="SSRF via PDF parser")
+    session.add(w)
+    session.commit()
+    # A writeup carrying cwe/cve/program attributes (the values the
+    # worker derives from the payload): the created row must keep them.
+    carrying = types.SimpleNamespace(
+        id=w.id, title=w.title, excerpt="",
+        cwe_ids=["CWE-918"], cve_ids=["CVE-2022-22965"],
+        program="Acme Spring",
+    )
+    apply_classification(session, carrying)
+    session.commit()
+    row = session.query(WriteupVuln).filter_by(writeup_id=w.id).one()
+    assert row.vuln_class == "SSRF"
+    assert row.cwe_id == "CWE-918"
+    assert row.cve_id == "CVE-2022-22965"
+    assert row.program == "Acme Spring"
+    assert row.program_slug == "acme-spring"
+
+
+def test_classify_uses_program_field_for_tech(session):
+    """Final review triage, Task 6: apply_classification passes the
+    program through to the classifier, so a technology mentioned
+    only in the program counts for tech detection."""
+    c = classify_java_spring({
+        "title": "SSRF via PDF parser",
+        "excerpt": "",
+        "program": "Spring Boot app",
+        "cwe_ids": ["CWE-918"],
+    })
+    assert "spring-boot" in c.tech
+    assert c.vuln_class == "SSRF"
+
+
 def test_apply_fills_null_vuln_class_on_existing_row(session):
     w = _writeup(title="RCE via Log4Shell in log4j-core 2.14.1")
     session.add(w)

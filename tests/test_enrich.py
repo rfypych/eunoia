@@ -29,6 +29,7 @@ from eunoia.ingestion.kev import KEV_URL, fetch_kev, sync_kev
 from eunoia.ingestion.nvd import (
     EPSS_API_URL,
     NVD_API_URL,
+    NvdError,
     NvdRateLimitedError,
     TokenBucket,
     fetch_cve,
@@ -403,3 +404,76 @@ def test_enrich_with_epss_stores_values(session, http_client, limiter):
     assert r.epss == 0.5 and r.epss_percentile == 0.9
     row = session.get(CveCache, CVE_ID)
     assert float(row.epss) == 0.5 and float(row.epss_percentile) == 0.9
+
+
+def test_enrich_without_epss_preserves_stored_epss(session, http_client, limiter):
+    """Task 7 triage item: a plain NVD refresh (include_epss=False)
+    must not wipe a previously stored EPSS value."""
+    with respx.mock as router:
+        router.get(NVD_API_URL).mock(return_value=Response(200, json=_nvd_payload()))
+        router.get(EPSS_API_URL).mock(
+            return_value=Response(
+                200,
+                json={"status": "OK", "data": [{"cve": CVE_ID, "epss": "0.5", "percentile": "0.9"}]},
+            )
+        )
+        enrich_cve(CVE_ID, session=session, client=http_client,
+                   limiter=limiter, include_epss=True)
+    row = session.get(CveCache, CVE_ID)
+    row.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    session.flush()
+    with respx.mock as router:
+        router.get(NVD_API_URL).mock(return_value=Response(200, json=_nvd_payload()))
+        enrich_cve(CVE_ID, session=session, client=http_client,
+                   limiter=limiter, include_epss=False)
+    row = session.get(CveCache, CVE_ID)
+    assert float(row.epss) == 0.5 and float(row.epss_percentile) == 0.9
+
+
+def test_nvd_404_keeps_kev_only_row(session, http_client, limiter):
+    """Task 7 triage item: an NVD 404 must not discard a KEV-only
+    row — the record keeps its kev=True flag."""
+    with respx.mock as router:
+        router.get(KEV_URL).mock(return_value=Response(200, json=_kev_payload()))
+        sync_kev(session, client=http_client)
+    with respx.mock as router:
+        router.get(NVD_API_URL).mock(return_value=Response(404, json={}))
+        r = enrich_cve(CVE_ID, session=session, client=http_client, limiter=limiter)
+    assert r.kev is True
+    assert r.kev_date_added == date(2021, 12, 10)
+    assert session.get(CveCache, CVE_ID) is not None
+
+
+def test_fetch_cve_malformed_200_body_is_nvd_error(http_client, limiter):
+    """Task 7 triage item: a malformed 200 body is an NVD failure
+    (NvdError, which enrich_cve degrades on), never a bare ValueError."""
+    with respx.mock as router:
+        router.get(NVD_API_URL).mock(
+            return_value=Response(200, text="this is not json"))
+        with pytest.raises(NvdError):
+            fetch_cve(CVE_ID, client=http_client, limiter=limiter)
+
+
+def test_fetch_kev_skips_bad_date_added(http_client):
+    """Task 7 triage item: a bad dateAdded must not crash the daily
+    KEV sync — the malformed entry is skipped."""
+    payload = _kev_payload([CVE_ID, "CVE-2022-22965"])
+    payload["vulnerabilities"][1]["dateAdded"] = "not-a-date"
+    with respx.mock as router:
+        router.get(KEV_URL).mock(return_value=Response(200, json=payload))
+        kev = fetch_kev(client=http_client)
+    assert kev == {CVE_ID: date(2021, 12, 10)}
+
+
+def test_enrich_cve_with_caller_session_does_not_commit(
+    session, http_client, limiter
+):
+    """Final review I5: enrich_cve is flush-only for a caller-owned
+    session — the caller's transaction stays open (the old code
+    committed it, poisoning the worker pipeline's transaction
+    control)."""
+    with respx.mock as router:
+        router.get(NVD_API_URL).mock(return_value=Response(200, json=_nvd_payload()))
+        enrich_cve(CVE_ID, session=session, client=http_client, limiter=limiter)
+    assert session.in_transaction() is True
+    assert session.get(CveCache, CVE_ID) is not None

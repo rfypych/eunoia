@@ -23,21 +23,39 @@ KEV_URL = (
 
 
 def fetch_kev(client: httpx.Client | None = None) -> dict[str, date]:
-    """Fetch the KEV catalog as ``{cve_id: date_added}``."""
+    """Fetch the KEV catalog as ``{cve_id: date_added}``.
+
+    Task 7 triage item: a malformed body (non-JSON, or a
+    ``vulnerabilities`` entry that is not a dict) and a bad
+    ``dateAdded`` must not crash the daily sync. Malformed entries
+    are skipped; a non-JSON body or an HTTP failure raises
+    ``httpx.HTTPError``/``ValueError`` to the caller, which is a real
+    sync failure (visible, not a silent empty catalog).
+    """
     own_client = client is None
     http = client or default_http_client()
     try:
         response = http.get(KEV_URL)
         response.raise_for_status()
+        body = response.json()
     finally:
         if own_client:
             http.close()
     kev: dict[str, date] = {}
-    for item in (response.json() or {}).get("vulnerabilities") or []:
+    if not isinstance(body, dict):
+        raise ValueError("KEV feed body is not a JSON object")
+    for item in body.get("vulnerabilities") or []:
+        if not isinstance(item, dict):
+            continue
         cve_id = item.get("cveID")
         added = item.get("dateAdded")
-        if cve_id and added:
+        if not cve_id or not added:
+            continue
+        try:
             kev[cve_id] = date.fromisoformat(added)
+        except ValueError:
+            # Bad dateAdded: skip this entry, never crash the sync.
+            continue
     return kev
 
 

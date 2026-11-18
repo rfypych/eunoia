@@ -15,9 +15,17 @@ to 410 Gone, exactly like the R10 skill gate it generalizes.
 
 from __future__ import annotations
 
+from eunoia.models import Writeup
+
 SERVABLE_STATUSES = ("active", "updated")
 
-__all__ = ["SERVABLE_STATUSES", "NotServableError", "ensure_servable", "is_servable"]
+__all__ = [
+    "SERVABLE_STATUSES",
+    "NotServableError",
+    "ensure_servable",
+    "is_servable",
+    "servable_filter",
+]
 
 
 class NotServableError(ValueError):
@@ -39,6 +47,16 @@ def is_servable(writeup) -> bool:
         writeup.status in SERVABLE_STATUSES
         and writeup.quality_passed is not False
     )
+
+
+def servable_filter():
+    """SQLAlchemy conditions equivalent to :func:`is_servable`, for use
+    in queries. Apply as ``select(Writeup).where(*servable_filter())``
+    so the serving gate cannot drift between surfaces (final review I2)."""
+    return [
+        Writeup.status.in_(SERVABLE_STATUSES),
+        Writeup.quality_passed.is_not(False),
+    ]
 
 
 def ensure_servable(writeup) -> None:

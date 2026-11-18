@@ -164,6 +164,11 @@ def _lookup(state: RunState, budget: TokenBudget, query: dict,
         results = search(query, limit=limit, session=session, model=model,
                          retrieval="hybrid")
     except Exception as exc:  # lookup failure is recorded, not fatal
+        # Final review triage, Task 14: count the failure on the run
+        # state so the report surfaces it — a run whose lookups all
+        # failed must not report "completed" with zero hypotheses as
+        # if nothing went wrong.
+        state.lookup_failures += 1
         state.record_audit("lookup_failed",
                            {"query": key, "error": str(exc)})
         return LookupCall(query=key, results=[], limit=limit,
@@ -437,11 +442,18 @@ def _execute(scope: Scope, lab_target: str, *, session: Session,
         "budget_action": budget.action(),
         "window_used_pct": round(budget.usage_ratio * 100, 1),
         "budget_exhausted": state.budget_exhausted,
+        # Final review triage, Task 14: lookup failures are visible
+        # in the report, not only in the audit trail.
+        "lookup_failures": state.lookup_failures,
     }
     state.record_audit("report_done", {"findings": len(findings)})
+    status = (
+        "completed_budget_exhausted" if state.budget_exhausted
+        else "completed_with_lookup_failures" if state.lookup_failures
+        else "completed"
+    )
     return RunReport(
-        status=("completed_budget_exhausted" if state.budget_exhausted
-                else "completed"),
+        status=status,
         fingerprint=state.fingerprint,
         hypotheses=hypotheses,
         findings=findings,

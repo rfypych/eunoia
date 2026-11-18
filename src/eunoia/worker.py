@@ -7,10 +7,11 @@ once. ``scripts/worker.py`` is the thin CLI entry point;
 ``deploy/supervisord-eunoia.conf`` runs ``poll-loop`` under
 supervisord and ``kev-sync`` from cron.
 
-Per-kind handler kwargs (the Task 5 wiring minor): ``dispatch_job``
-forwards kwargs verbatim, and ``handle_nvd_refresh_job`` rejects
-unknown kwargs — so the drain passes the URL checker / encoder only
-to discovery jobs, and only the NVD client/limiter to refresh jobs.
+Per-kind handler kwargs: ``dispatch_job`` filters kwargs to what each
+handler accepts (see ``jobs._HANDLER_KWARGS``), so the drain passes
+the URL checker / encoder only to discovery jobs, and only the NVD
+client/limiter to refresh jobs — a mis-routed kwarg can no longer
+dead-letter a job after 5 retries.
 
 Transaction control belongs to the worker: each cycle/sync commits
 its session at the end. The poller needs no auth (Task 1 decision:
@@ -20,6 +21,7 @@ Hacktivity REST works without a token, ``no_auth_ok``).
 from __future__ import annotations
 
 import argparse
+import logging
 import time
 from functools import partial
 from typing import Callable
@@ -34,6 +36,8 @@ from eunoia.ingestion.kev import sync_kev
 from eunoia.ingestion.nvd import TokenBucket, default_http_client
 
 __all__ = ["run_kev_sync_once", "run_poll_cycle", "main"]
+
+logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL_MINUTES = 15
 _NVD_BUCKET_CAPACITY = 5  # NVD without an API key: 5 requests / 30 s.
@@ -67,7 +71,14 @@ def run_poll_cycle(session: Session, *, poll_fn: Callable | None = None,
     next job instead of stopping.
     """
     poller = poll_fn or (lambda s: poll_hackerone(session=s))
-    poller(session)
+    try:
+        poller(session)
+    except Exception:
+        # Final review C2: a failed poll must never kill the cycle.
+        # Log it and still drain due jobs; the next cycle retries the
+        # poll. (A poll failure is transient by nature — 403/429/
+        # HostPausedError/network — and the drain is independent work.)
+        logger.exception("HackerOne poll failed; draining due jobs anyway")
     processed = failed = 0
     handler = partial(
         _dispatch_for_worker, model=model, url_checker=url_checker,
@@ -131,10 +142,18 @@ def main(argv: list[str] | None = None) -> None:
             return
         # poll-loop
         while True:
-            with _open_session() as session:
-                result = run_poll_cycle(
-                    session, client=client, limiter=limiter)
-            print(result, flush=True)
+            try:
+                with _open_session() as session:
+                    result = run_poll_cycle(
+                        session, client=client, limiter=limiter)
+                print(result, flush=True)
+            except Exception:
+                # Final review C2: a failed cycle (poll, drain, or
+                # commit) must never crash the loop — log it, sleep,
+                # and try the next cycle. Under supervisord this is
+                # what keeps the poller alive for the 7-day DoD 1 run
+                # instead of hot-looping into startretries exhaustion.
+                logger.exception("poll cycle failed; continuing loop")
             if args.once:
                 return
             time.sleep(args.interval_minutes * 60)

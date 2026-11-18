@@ -335,10 +335,15 @@ def test_sanitize_evidence_redacts_secrets():
 # --- step 9: report + human review ------------------------------------------
 
 def test_report_requires_human_review_for_material_findings(lab):
+    """Final review triage, Task 14: the old assertion was
+    conditional (``if material:``) — if a fixture change ever yielded
+    zero confirmed findings, the requirement went untested while the
+    test still passed. The run must actually produce a confirmed
+    finding first."""
     report = run_loop(scope=lab["scope"], lab_target=lab["url"])
     material = [f for f in report.findings if f.status == "confirmed"]
-    if material:
-        assert report.human_review_required is True
+    assert material, "the lab run must produce a confirmed finding"
+    assert report.human_review_required is True
     assert report.audit, "run must carry a complete audit trail"
 
 
@@ -388,6 +393,44 @@ def test_state_compact_drops_raw_tool_output():
     state.compact()
     assert state.compacted is True
     assert all(len(o) <= 120 for o in state.observations["h1"])
+
+
+def test_state_compact_builds_handoff_summary():
+    """Final review triage, Task 14: compact() constructs a real
+    handoff summary (it used to only claim one in the audit string)
+    and stores it on the state."""
+    state = RunState()
+    state.fingerprint = [Fingerprint(technology="spring-boot",
+                                      version="3.2.0", confidence=0.9)]
+    state.add_hypothesis(Hypothesis(
+        id="h1", writeup_id="w_x", title="SSRF", technique="SSRF",
+        target="lab", status="testing"))
+    state.mark_seen("w_x")
+    state.record_observation("h1", "x" * 4000)
+    state.compact()
+    assert state.handoff_summary, "compact() must build the summary"
+    assert "spring-boot" in state.handoff_summary
+    assert "1 testing" in state.handoff_summary
+    assert "1 writeups seen" in state.handoff_summary
+    audit = [a for a in state.audit if a["event"] == "context_compacted"]
+    assert audit and audit[0]["detail"]["handoff_summary"] == state.handoff_summary
+
+
+def test_run_surfaces_lookup_failures_in_report(lab, monkeypatch):
+    """Final review triage, Task 14: a run whose lookups all fail
+    must not report "completed" with zero hypotheses as if nothing
+    went wrong — the failures are a distinct status and a coverage
+    count."""
+    import eunoia.harness.loop as loop_mod
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("registry unreachable")
+
+    monkeypatch.setattr(loop_mod, "search", _boom)
+    report = run_loop(scope=lab["scope"], lab_target=lab["url"])
+    assert report.status == "completed_with_lookup_failures"
+    assert report.coverage["lookup_failures"] >= 1
+    assert report.hypotheses == []
 
 
 def test_redirect_outside_allowlist_blocked_in_run(lab):

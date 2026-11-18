@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from pathlib import Path
 
 import pytest
@@ -104,7 +105,10 @@ def golden(session, encoder):
 
 
 def test_golden_set_has_50_queries():
-    qs = json.loads(Path("docs/golden/queries.json").read_text())
+    # Repo-root relative (final review triage, Task 15): the test
+    # must pass from any working directory, not only the repo root.
+    repo = Path(__file__).resolve().parent.parent
+    qs = json.loads((repo / "docs" / "golden" / "queries.json").read_text())
     assert len(qs) >= 50
     assert all("expected_writeup_ids" in q for q in qs)
 
@@ -134,12 +138,33 @@ def test_golden_expected_ids_exist_in_corpus(session, encoder, golden):
             assert wid in ids, (q["id"], wid)
 
 
+def test_reseed_updates_changed_fields(session, encoder, golden):
+    """Final review triage, Task 15: editing corpus.json after a
+    first seed must update the row on re-seed, not leave it stale."""
+    first = session.query(Writeup).order_by(Writeup.id).first()
+    first.title = "Stale title that corpus.json no longer has"
+    session.flush()
+    result = seed_golden_corpus(session, model=encoder)
+    assert result["updated"] >= 1
+    refreshed = session.get(Writeup, first.id)
+    assert refreshed.title != "Stale title that corpus.json no longer has"
+
+
 def test_excluded_rows_never_served(session, encoder, golden):
+    # Final review triage, Task 15: assert by api id, not by title
+    # substring — a title substring check would pass even if the
+    # wrong row were served under a different title.
+    corpus = load_corpus()
+    excluded_ids = {
+        f"w_{uuid.UUID(w['id']).hex}"
+        for w in corpus["writeups"]
+        if w["status"] != "active" or w["language"] != "en"
+    }
+    assert excluded_ids, "corpus must carry excluded rows to test"
     for q in load_queries():
         results = search(q, limit=10, session=session, model=encoder)
-        titles = [r.title.lower() for r in results]
-        assert not any("retracted" in t for t in titles), q["id"]
-        assert not any("lewat parser" in t for t in titles), q["id"]
+        returned = {r.writeup_id for r in results}
+        assert not (returned & excluded_ids), q["id"]
 
 
 # --- measurement -----------------------------------------------------------

@@ -65,6 +65,8 @@ class RunState:
     retrieval_tokens: int = 0
     compacted: bool = False
     budget_exhausted: bool = False
+    lookup_failures: int = 0
+    handoff_summary: str = ""
 
     # --- hypotheses ----------------------------------------------------
 
@@ -137,13 +139,31 @@ class RunState:
     def compact(self) -> None:
         """Compaction line (65%): drop summarized tool output, keep a
         one-line summary per observation; the handoff summary +
-        system prompt + last 2 turns start the next segment."""
+        system prompt + last 2 turns start the next segment.
+
+        Final review triage, Task 14: the handoff summary is actually
+        constructed here now (it used to be only claimed in the audit
+        string) and stored on ``self.handoff_summary``.
+        """
         for hyp_id, obs in self.observations.items():
             self.observations[hyp_id] = [
                 o[:_OBSERVATION_SUMMARY_MAX] for o in obs
             ]
         self.compacted = True
+        techs = ", ".join(
+            f.technology for f in self.fingerprint) or "no fingerprint"
+        by_status: dict[str, int] = {}
+        for hyp in self.hypotheses.values():
+            by_status[hyp.status] = by_status.get(hyp.status, 0) + 1
+        status_part = ", ".join(
+            f"{n} {s}" for s, n in sorted(by_status.items())
+        ) or "no hypotheses"
+        self.handoff_summary = (
+            f"Compacted at 65%: {techs}; hypotheses {status_part}; "
+            f"{len(self.seen_ids)} writeups seen; "
+            f"{len(self.audit)} audit events."
+        )
         self.record_audit(
             "context_compacted",
             {"reason": "usage reached the 65% summarize line",
-             "kept": "handoff summary + system prompt + last 2 turns"})
+             "handoff_summary": self.handoff_summary})

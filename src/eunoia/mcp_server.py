@@ -55,7 +55,11 @@ from eunoia.config import get_settings
 from eunoia.db import get_engine
 from eunoia.models import Writeup, WriteupVuln
 from eunoia.safety.secrets_scan import SecretFoundError
-from eunoia.safety.serving import NotServableError, ensure_servable
+from eunoia.safety.serving import (
+    NotServableError,
+    ensure_servable,
+    servable_filter,
+)
 from eunoia.search import search
 from eunoia.skills import get_skill_text
 
@@ -126,6 +130,22 @@ def _request_headers(ctx: Context | None) -> dict[str, str]:
     if not headers:
         return {}
     return {str(k).lower(): str(v) for k, v in headers.items()}
+
+
+def _effective_limit(limit) -> int:
+    """Clamp a caller-supplied limit into [1, 10] (Review Focus 4).
+
+    A non-numeric limit is a client error (INVALID_ARGUMENT), never a
+    bare ``ValueError`` escaping as a 500 (Task 11 triage item).
+    """
+    try:
+        value = int(limit)
+    except (TypeError, ValueError):
+        raise McpToolError(
+            "INVALID_ARGUMENT",
+            f"limit must be an integer, got {limit!r}.",
+        )
+    return max(1, min(value, _MAX_LIMIT))
 
 
 def _resolve_auth(
@@ -231,6 +251,11 @@ def build_mcp_server(
 
     def _auth_and_limit(ctx: Context | None, session: Session) -> str:
         tier, identity = _resolve_auth(ctx, session, default_tier)
+        _check_limit(identity, tier)
+        return tier
+
+    def _check_limit(identity: str, tier: str) -> None:
+        """Consume one quota unit; raise RATE_LIMITED when exhausted."""
         result = limiter.check(identity, tier)
         if not result.allowed:
             raise McpToolError(
@@ -238,7 +263,6 @@ def build_mcp_server(
                 f"Rate limit exceeded for the {tier} tier; "
                 f"retry after {result.retry_after or 60}s.",
             )
-        return tier
 
     # --- search_writeups ---------------------------------------------------
 
@@ -248,7 +272,9 @@ def build_mcp_server(
             "writeups matching a stack or technique. Use for Lookup #1 "
             "(pre-test attack plan, one call per main technology, "
             "default limit 5) and Lookup #2 (mid-test, limit 3, when "
-            "stuck or on a suspicious candidate). "
+            "stuck or on a suspicious candidate — pass mid_test=true "
+            "for the mid-test ranking, which weighs technique "
+            "similarity; without it the pre-test ranking is used). "
             "Anonymous callers may only use keyword mode; semantic and "
             "hybrid modes require an API key. "
             "limit is 1-10, default 5; values outside are clamped, "
@@ -267,6 +293,7 @@ def build_mcp_server(
         severity: str | None = None,
         mode: str = "keyword",
         limit: int = 5,
+        mid_test: bool = False,
         ctx: Context = None,  # type: ignore[assignment]
     ) -> dict:
         if not query or not query.strip():
@@ -277,15 +304,19 @@ def build_mcp_server(
                 "INVALID_ARGUMENT",
                 f"Unknown mode {mode!r}; use keyword, semantic, or hybrid.",
             )
-        effective_limit = max(1, min(int(limit), _MAX_LIMIT))
+        effective_limit = _effective_limit(limit)
         with _session() as session:
-            tier = _auth_and_limit(ctx, session)
+            # Task 11 fix: the mode check runs BEFORE the rate-limit
+            # check, so a rejected anonymous semantic/hybrid call
+            # consumes no quota (same rule as REST Task 10).
+            tier, identity = _resolve_auth(ctx, session, default_tier)
             if tier == "anon" and effective_mode != "keyword":
                 raise McpToolError(
                     "MODE_REQUIRES_KEY",
                     f"Mode {effective_mode!r} requires an API key; "
                     "anonymous callers may only use keyword search.",
                 )
+            _check_limit(identity, tier)
             structured = {
                 "tech": tuple(
                     str(t).strip().lower() for t in (tech or ())
@@ -295,7 +326,10 @@ def build_mcp_server(
                 "cwe": cwe,
                 "cve": cve,
                 "evidence_pattern": query,
-                "mode": "pre_test",
+                # Final review I1: the mid-test ranking was unreachable
+                # from every agent-facing surface; mid_test=true selects
+                # it, and the response reports which lookup was used.
+                "mode": "mid_test" if mid_test else "pre_test",
             }
             try:
                 results = search(
@@ -372,6 +406,7 @@ def build_mcp_server(
             "results": items,
             "total": len(items),
             "mode": effective_mode,
+            "lookup": "mid_test" if mid_test else "pre_test",
             "limit": effective_limit,
             "query": query,
         }
@@ -463,7 +498,7 @@ def build_mcp_server(
                         func.count(func.distinct(WriteupVuln.writeup_id)),
                     )
                     .join(Writeup, Writeup.id == WriteupVuln.writeup_id)
-                    .where(Writeup.status == "active")
+                    .where(*servable_filter())
                     .where(WriteupVuln.vuln_class.is_not(None))
                     .group_by(WriteupVuln.vuln_class)
                     .order_by(
@@ -499,7 +534,7 @@ def build_mcp_server(
                         func.count(func.distinct(WriteupVuln.writeup_id)),
                     )
                     .join(Writeup, Writeup.id == WriteupVuln.writeup_id)
-                    .where(Writeup.status == "active")
+                    .where(*servable_filter())
                     .where(WriteupVuln.program.is_not(None))
                     .group_by(
                         WriteupVuln.program, WriteupVuln.program_slug

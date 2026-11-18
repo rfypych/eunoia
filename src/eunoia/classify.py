@@ -52,8 +52,13 @@ __all__ = [
 
 SEED_CSV = Path(__file__).parent / "seed" / "tech_aliases_java.csv"
 
-# Field weights: where a technology mention was found. A title match alone
-# (0.5) is not enough for > 0.5 confidence; title + excerpt (0.85) is.
+# Field weights: where a technology mention was found. Per technology
+# the STRONGEST field match wins (max, not sum): a title match alone
+# gives 0.5, a title + excerpt match still gives 0.5 for that
+# technology. Confidence sums the per-technology best weights
+# (capped at 0.95), so two technologies at 0.5 each reach 0.95.
+# The old comment claimed title + excerpt = 0.85; that was wrong
+# (final review triage, Task 6).
 _FIELD_WEIGHTS = {"title": 0.5, "program": 0.4, "excerpt": 0.35}
 _MAX_CONFIDENCE = 0.95
 
@@ -112,6 +117,14 @@ _CWE_TO_VULN_CLASS: dict[str, str] = {
     "CWE-362": "Race Condition",
 }
 
+#: The registry's vuln-class taxonomy: every class the CWE map can
+#: produce, plus "unclassified". The quality gate validates against
+#: this set instead of accepting any non-empty string as "mapped"
+#: (final review triage, Task 13).
+VULN_CLASSES: frozenset[str] = frozenset(
+    set(_CWE_TO_VULN_CLASS.values()) | {"unclassified"}
+)
+
 
 @dataclass(frozen=True)
 class Alias:
@@ -162,6 +175,12 @@ def _as_list(value: Any) -> list[str]:
 
 def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower()).strip()
+
+
+def _slugify(text: str | None) -> str:
+    """Lowercase slug for program names (same shape as the worker's)."""
+    slug = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return slug or "unknown"
 
 
 def _cwe_ids(writeup: Any) -> list[str]:
@@ -339,36 +358,43 @@ def apply_classification(
     of only updating an existing one. When a row exists with a null
     vuln_class, it is filled in; an already-set vuln_class is left alone.
     """
+    row = (
+        session.query(WriteupVuln)
+        .filter_by(writeup_id=writeup.id)
+        .first()
+    )
+    cwe_ids = _cwe_ids(writeup)
+    cve_ids = _cve_ids(writeup)
+    program = _get(writeup, "program")
+    if row is not None:
+        if row.cwe_id:
+            cwe_ids = [row.cwe_id]
+        if row.cve_id:
+            cve_ids = [row.cve_id]
+        if row.program:
+            program = row.program
     if classification is None:
-        row = (
-            session.query(WriteupVuln)
-            .filter_by(writeup_id=writeup.id)
-            .first()
-        )
-        cwe_ids = _cwe_ids(writeup)
-        cve_ids = _cve_ids(writeup)
-        if row is not None:
-            if row.cwe_id:
-                cwe_ids = [row.cwe_id]
-            if row.cve_id:
-                cve_ids = [row.cve_id]
         classification = classify_java_spring(
             {
                 "title": writeup.title,
                 "excerpt": writeup.excerpt,
+                "program": program,
                 "cwe_ids": cwe_ids,
                 "cve_ids": cve_ids,
             }
         )
-    row = (
-        session.query(WriteupVuln).filter_by(writeup_id=writeup.id).first()
-    )
     if row is None:
+        # Final review triage, Task 6: the create path used to lose
+        # the CWE/CVE (it re-read them from the bare writeup, which
+        # carries none on the model) and omitted the program. The
+        # values derived above are now carried through to the row.
         row = WriteupVuln(
             writeup_id=writeup.id,
             vuln_class=classification.vuln_class,
-            cwe_id=_cwe_ids(writeup)[0] if _cwe_ids(writeup) else None,
-            cve_id=_cve_ids(writeup)[0] if _cve_ids(writeup) else None,
+            cwe_id=cwe_ids[0] if cwe_ids else None,
+            cve_id=cve_ids[0] if cve_ids else None,
+            program=program,
+            program_slug=_slugify(program) if program else None,
         )
         session.add(row)
     elif row.vuln_class is None:
