@@ -404,16 +404,19 @@ def test_writeup_markdown(client, session):
     assert "https://hackerone.com/reports/689314" in r.text
 
 
-def test_writeup_skill_md_not_implemented_until_task_12(client, session):
-    # Task 12 owns get_skill_text; the route exists but has no generator
-    # to call yet, so it must fail explicitly, never with a stub skill.
+def test_writeup_skill_md_returns_skill(client, session):
+    # Task 12 implemented get_skill_text; the route serves the real
+    # skill now (the 501 placeholder from Task 10 is gone).
     w = session.execute(
         text("SELECT id FROM writeups WHERE canonical_url = "
              "'https://hackerone.com/reports/689314'")
     ).first()
     r = client.get(f"/v1/writeups/w_{w[0].hex}/skill.md")
-    assert r.status_code == 501
-    assert r.json()["error"]["code"] == "NOT_IMPLEMENTED"
+    assert r.status_code == 200
+    assert "text/markdown" in r.headers["content-type"]
+    assert r.text.splitlines()[1].startswith("name: ssrf-")
+    assert "authorization" in r.text.lower()
+    assert "berlatih dengan aman" in r.text
 
 
 # --- facets -----------------------------------------------------------------

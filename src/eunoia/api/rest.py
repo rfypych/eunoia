@@ -51,6 +51,7 @@ from eunoia.config import Settings, get_settings
 from eunoia.db import get_engine
 from eunoia.models import Source, Submission, Writeup, WriteupSource, WriteupVuln
 from eunoia.search import SearchResult, search
+from eunoia.skills import get_skill_text
 
 __all__ = ["ApiError", "create_app"]
 
@@ -750,18 +751,11 @@ def create_app(
 
     @app.get("/v1/writeups/{raw_id}/skill.md")
     def writeup_skill(raw_id: str, session: Session = Depends(_session)):
-        """Per-writeup SKILL.md. Task 12 owns ``get_skill_text``; until
-        it lands this is an explicit 501, never a stub skill."""
+        """Per-writeup SKILL.md (Task 12: ``get_skill_text``)."""
         writeup = _get_writeup_or_404(session, raw_id)
-        try:
-            from eunoia.skills import get_skill_text
-        except ImportError:
-            raise ApiError(
-                501, "NOT_IMPLEMENTED",
-                "SKILL.md generation is not available yet.",
-            )
         return PlainTextResponse(
-            get_skill_text(writeup.api_id), media_type="text/markdown")
+            get_skill_text(writeup.api_id, session=session),
+            media_type="text/markdown")
 
     @app.get("/v1/writeups/{raw_id}")
     def get_writeup(raw_id: str, session: Session = Depends(_session)):
