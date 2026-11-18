@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from eunoia.config import get_settings
 from eunoia.db import get_engine
 from eunoia.models import Writeup, WriteupVuln
+from eunoia.safety.secrets_scan import scan_secrets
 
 MAX_NAME_LEN = 64
 MAX_BODY_LINES = 500
@@ -245,7 +246,17 @@ def get_skill_text(writeup_id: str | uuid.UUID,
                 "retracted or taken-down content is not served"
             )
         vuln = _first_vuln(session, writeup.id)
-        return _render_writeup_skill(writeup, vuln)
+        text = _render_writeup_skill(writeup, vuln)
+        # Task 13 (spec §6.5 gate (d)): defense in depth — the renderer
+        # is payload-free by construction, but a secret that slips into
+        # a title or field must never be served as a skill.
+        findings = scan_secrets(text)
+        if findings:
+            raise ValueError(
+                f"skill for writeup {writeup.api_id} contains a "
+                f"possible secret ({findings[0].pattern}); refusing to serve"
+            )
+        return text
     finally:
         if own_session:
             session.close()
