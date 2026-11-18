@@ -322,8 +322,14 @@ def search(
     session: Session | None = None,
     model=None,
     rerank: bool = False,
+    retrieval: str = "hybrid",
 ) -> list[SearchResult]:
-    """Hybrid search over the registry. See the module docstring."""
+    """Hybrid search over the registry. See the module docstring.
+
+    ``retrieval`` selects the retrieval channels: ``"hybrid"`` (BM25 +
+    ANN, default), ``"keyword"`` (BM25 only — the anon tier never
+    touches the embedding model), or ``"semantic"`` (ANN only).
+    """
     structured = StructuredQuery.from_query(query)
     limit = max(1, min(int(limit), MAX_LIMIT))
     if rerank:
@@ -331,6 +337,8 @@ def search(
             "cross-encoder rerank is not implemented in MVP; "
             "rerank=False only"
         )
+    if retrieval not in ("keyword", "semantic", "hybrid"):
+        raise ValueError(f"unknown retrieval mode: {retrieval!r}")
 
     own_session = session is None
     if own_session:
@@ -391,72 +399,77 @@ def search(
             return []
 
         docs: list[list[str]] = []
-        for wid in ids:
-            w = candidates[wid]
-            vuln = vulns_by_writeup.get(wid, [None])[0]
-            docs.append(
-                _tokenize(
-                    " ".join(
-                        filter(
-                            None,
-                            [
-                                w.title,
-                                w.excerpt,
-                                vuln.vuln_class if vuln else None,
-                                vuln.cwe_id if vuln else None,
-                                vuln.cve_id if vuln else None,
-                                vuln.program if vuln else None,
-                            ],
+        bm25_ranked: list = []
+        if retrieval != "semantic":
+            for wid in ids:
+                w = candidates[wid]
+                vuln = vulns_by_writeup.get(wid, [None])[0]
+                docs.append(
+                    _tokenize(
+                        " ".join(
+                            filter(
+                                None,
+                                [
+                                    w.title,
+                                    w.excerpt,
+                                    vuln.vuln_class if vuln else None,
+                                    vuln.cwe_id if vuln else None,
+                                    vuln.cve_id if vuln else None,
+                                    vuln.program if vuln else None,
+                                ],
+                            )
                         )
                     )
                 )
-            )
-        bm25 = _bm25_scores(docs, terms)
-        bm25_ranked = [
-            wid
-            for wid, score in sorted(
-                zip(ids, bm25), key=lambda pair: pair[1], reverse=True
-            )
-            if score > 0
-        ][:_RETRIEVAL_TOP_N]
+            bm25 = _bm25_scores(docs, terms)
+            bm25_ranked = [
+                wid
+                for wid, score in sorted(
+                    zip(ids, bm25), key=lambda pair: pair[1], reverse=True
+                )
+                if score > 0
+            ][:_RETRIEVAL_TOP_N]
 
         # --- ANN top-100 ---------------------------------------------------
-        query_text = " ".join(
-            part
-            for part in [
-                " ".join(structured.tech),
-                structured.version or "",
-                structured.vuln_class or "",
-                structured.cwe or "",
-                structured.cve or "",
-                structured.endpoint_pattern or "",
-                structured.evidence_pattern or "",
-            ]
-            if part
-        )
-        encoder = model if model is not None else get_model()
-        query_vector = [float(v) for v in encoder.encode([query_text])[0]]
-        ann_rows = (
-            session.execute(
-                select(
-                    Embedding.writeup_id,
-                    Embedding.embedding.cosine_distance(query_vector).label(
-                        "distance"
-                    ),
-                )
-                .where(Embedding.writeup_id.in_(ids))
-                .where(Embedding.model == MODEL_NAME)
-                .where(Embedding.model_version == MODEL_VERSION)
-                .order_by("distance")
-                .limit(_RETRIEVAL_TOP_N)
+        ann_ranked: list = []
+        ann_similarity: dict = {}
+        if retrieval != "keyword":
+            query_text = " ".join(
+                part
+                for part in [
+                    " ".join(structured.tech),
+                    structured.version or "",
+                    structured.vuln_class or "",
+                    structured.cwe or "",
+                    structured.cve or "",
+                    structured.endpoint_pattern or "",
+                    structured.evidence_pattern or "",
+                ]
+                if part
             )
-            .all()
-        )
-        ann_ranked = [row.writeup_id for row in ann_rows]
-        ann_similarity = {
-            row.writeup_id: max(0.0, min(1.0, 1.0 - float(row.distance)))
-            for row in ann_rows
-        }
+            encoder = model if model is not None else get_model()
+            query_vector = [float(v) for v in encoder.encode([query_text])[0]]
+            ann_rows = (
+                session.execute(
+                    select(
+                        Embedding.writeup_id,
+                        Embedding.embedding.cosine_distance(query_vector).label(
+                            "distance"
+                        ),
+                    )
+                    .where(Embedding.writeup_id.in_(ids))
+                    .where(Embedding.model == MODEL_NAME)
+                    .where(Embedding.model_version == MODEL_VERSION)
+                    .order_by("distance")
+                    .limit(_RETRIEVAL_TOP_N)
+                )
+                .all()
+            )
+            ann_ranked = [row.writeup_id for row in ann_rows]
+            ann_similarity = {
+                row.writeup_id: max(0.0, min(1.0, 1.0 - float(row.distance)))
+                for row in ann_rows
+            }
 
         # --- RRF fusion → top-50 ------------------------------------------
         fused = _rrf([bm25_ranked, ann_ranked])

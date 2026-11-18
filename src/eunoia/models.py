@@ -354,3 +354,58 @@ class RunLesson(Base):
     submitted_at: Mapped[datetime | None] = mapped_column(
         _ts(), server_default=func.now()
     )
+
+
+class ApiKey(Base):
+    """REST/MCP API keys (spec §5.5, Task 10).
+
+    Only the SHA-256 hash is stored; the plaintext key is shown once
+    at creation and never again. Revocation is a flag, never a delete,
+    so past usage stays attributable.
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid7)
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    owner: Mapped[str | None] = mapped_column(String(256))
+    tier: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="free"
+    )
+    created_at: Mapped[datetime | None] = mapped_column(
+        _ts(), server_default=func.now()
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(_ts())
+    revoked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(_ts())
+
+    @property
+    def api_id(self) -> str:
+        return f"key_{self.id.hex}"
+
+
+class Submission(Base):
+    """Human review queue for POST /v1/submissions (spec §5.5).
+
+    A submission is never auto-indexed: it sits in ``in_review`` until
+    a human curates it. One in-review row per URL (application-level
+    idempotency; re-submitting the same URL returns the existing row).
+    """
+
+    __tablename__ = "submissions"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid7)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="in_review"
+    )
+    submitted_at: Mapped[datetime | None] = mapped_column(
+        _ts(), server_default=func.now()
+    )
+
+    @property
+    def api_id(self) -> str:
+        return f"sub_{self.id.hex}"
