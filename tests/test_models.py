@@ -3,8 +3,9 @@
 import uuid
 
 import pytest
-from sqlalchemy import inspect
-from sqlalchemy.exc import IntegrityError
+from pgvector.sqlalchemy import HALFVEC
+from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from eunoia.config import get_settings
@@ -12,6 +13,7 @@ from eunoia.db import get_engine
 from eunoia.models import (
     Base,
     CveCache,
+    Embedding,
     RunLesson,
     Source,
     Writeup,
@@ -27,6 +29,15 @@ TEST_DATABASE_URL = "postgresql+psycopg://eunoia@localhost:5432/eunoia_test"
 @pytest.fixture()
 def session():
     engine = get_engine(get_settings(DATABASE_URL=TEST_DATABASE_URL))
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except OperationalError:
+        pytest.fail(
+            "Test database 'eunoia_test' is missing or unreachable. "
+            "Create it with: bash scripts/setup_test_db.sh "
+            "(see README.md, 'Test database')."
+        )
     Base.metadata.create_all(engine)
     with Session(engine) as s:
         yield s
@@ -112,6 +123,24 @@ def test_cve_cache_keyed_by_cve_id(session):
     session.add(CveCache(cve_id="CVE-2021-44228", kev=True))
     session.commit()
     assert session.query(CveCache).one().kev is True
+
+
+def test_embedding_column_is_halfvec(session):
+    # Spec §5.4 / plan Task 8: embeddings are stored as halfvec, not vector.
+    col = Embedding.__table__.c.embedding
+    assert isinstance(col.type, HALFVEC) and col.type.dim == 384
+    session.add(_writeup())
+    session.commit()
+    w = session.query(Writeup).one()
+    session.add(Embedding(writeup_id=w.id, model="m", model_version="1",
+                          embedding=[0.0] * 384))
+    session.commit()
+    row = session.execute(text(
+        "SELECT udt_name FROM information_schema.columns "
+        "WHERE table_name='embeddings' AND column_name='embedding'"
+    )).scalar_one()
+    assert row == "halfvec"
+    assert session.query(Embedding).one().embedding == [0.0] * 384
 
 
 def test_run_lessons_schema_only_no_mvp_writes(session):

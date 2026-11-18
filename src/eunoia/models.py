@@ -12,7 +12,7 @@ import time
 import uuid
 from datetime import datetime
 
-from pgvector.sqlalchemy import Vector
+from pgvector.sqlalchemy import HALFVEC
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -221,7 +221,7 @@ class Embedding(Base):
     )
     model: Mapped[str | None] = mapped_column(String(128))
     model_version: Mapped[str | None] = mapped_column(String(64))
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(384))
+    embedding: Mapped[list[float] | None] = mapped_column(HALFVEC(384))
     embedded_text_hash: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime | None] = mapped_column(
         _ts(), server_default=func.now()

@@ -8,7 +8,7 @@ Create Date: 2026-11-18 15:17:31.489888
 from typing import Sequence, Union
 
 from alembic import op
-import pgvector.sqlalchemy.vector
+import pgvector.sqlalchemy.halfvec
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
@@ -121,7 +121,7 @@ def upgrade() -> None:
     sa.Column('writeup_id', sa.Uuid(), nullable=False),
     sa.Column('model', sa.String(length=128), nullable=True),
     sa.Column('model_version', sa.String(length=64), nullable=True),
-    sa.Column('embedding', pgvector.sqlalchemy.vector.VECTOR(dim=384), nullable=True),
+    sa.Column('embedding', pgvector.sqlalchemy.halfvec.HALFVEC(dim=384), nullable=True),
     sa.Column('embedded_text_hash', sa.String(length=64), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
     sa.ForeignKeyConstraint(['writeup_id'], ['writeups.id'], ondelete='CASCADE'),
