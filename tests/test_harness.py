@@ -388,3 +388,34 @@ def test_state_compact_drops_raw_tool_output():
     state.compact()
     assert state.compacted is True
     assert all(len(o) <= 120 for o in state.observations["h1"])
+
+
+def test_redirect_outside_allowlist_blocked_in_run(lab):
+    """DoD 6 (Task 16): a probe that redirects outside the allowlist
+    is blocked inside the run, not followed, and the observation is
+    treated as no-signal."""
+    calls = {"n": 0}
+
+    def _probe(hypothesis, target):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return Observation(status=302, body="redirect",
+                               signal=False,
+                               redirect_url="https://evil.example/x")
+        return Observation(status=200, body="signal", signal=True)
+
+    report = run_loop(scope=lab["scope"], lab_target=lab["url"],
+                      probe_adapter=_probe)
+    blocked = [a for a in report.audit if a["event"] == "redirect_blocked"]
+    assert len(blocked) == 1
+    assert blocked[0]["detail"]["redirect_url"] == "https://evil.example/x"
+
+
+def test_run_report_records_budget_before_threshold(lab):
+    """DoD 7 (Task 16): the run records that it finished before the
+    65% compaction line (retrieval <= 20k), not just that it stayed
+    under the cap."""
+    report = run_loop(scope=lab["scope"], lab_target=lab["url"])
+    assert report.coverage["retrieval_tokens"] <= 20_000
+    assert report.coverage["budget_action"] == "ok"
+    assert report.coverage["window_used_pct"] < 65

@@ -1,39 +1,89 @@
 # Eunoia runbook — deployment schedules and recovery
 
-This is documentation only. The schedules below are deployment wiring
-(cron / systemd / a small runner process); no scheduler lives in the
-codebase yet. Task 16 owns turning this into deployed units.
+The schedules below are real mechanisms now (Task 16), not prose:
+`src/eunoia/worker.py` (`run_poll_cycle`, `run_kev_sync_once`),
+`scripts/worker.py` (thin CLI), `deploy/supervisord-eunoia.conf`
+(example supervisord unit + the cron line for KEV sync). What
+deployment still has to do is install those units and point
+`DATABASE_URL` at the deployment Postgres — nothing in this repo
+runs them on its own.
 
-## Schedules deployment must provide
+## Schedules
 
 ### 1. Poll loop — every 15 minutes
 
-Call `poll_hackerone()` (no auth needed — Task 1 decision:
-Hacktivity REST works without a token, `no_auth_ok`), then drain the
-jobs queue: repeatedly `claim_next_job(session)` and run
-`process_job(session, job.id, dispatch_job)` until no job is due.
+```sh
+.venv/bin/python scripts/worker.py poll-loop --interval-minutes 15
+```
+
+One cycle calls `poll_hackerone()` (no auth needed — Task 1
+decision: Hacktivity REST works without a token, `no_auth_ok`),
+then drains the jobs queue: repeatedly `claim_next_job(session)`
+and `process_job(session, job.id, handler)` until no job is due.
 `dispatch_job` routes by `kind`:
 
 - `hackerone_discovery` / `discovery` → the discovery worker, which
   upserts the writeup and then runs the enrichment pipeline
-  (classify → enrich CVEs → embed) inline.
+  (classify → quality gate → enrich CVEs → embed) inline. The
+  quality gate's URL check defaults to the production HEAD/GET
+  check (`_default_url_checker`); the worker passes no stub.
 - `nvd_refresh` → `handle_nvd_refresh_job`, which re-fetches one CVE
   into `cve_cache`. These jobs are queued by `enrich_cve` whenever an
   NVD fetch degrades; without a worker loop consuming them, refresh
   jobs accumulate unprocessed and stale cache rows never refresh.
+  The drain passes NVD client/limiter only to refresh jobs —
+  `handle_nvd_refresh_job` rejects unknown kwargs, so discovery
+  kwargs (`model`, `url_checker`) are never forwarded to it.
 
 `process_job` marks success `done`, failure `pending` with back-off
 1m → 1h → 1d, dead-lettered after 5 attempts. A discovery job never
 fails because of the pipeline: a pipeline step that raises is
 recorded in the writeup event's `pipeline_errors` detail and the job
-still completes.
+still completes. A job that raises inside `process_job` is counted
+as failed by the cycle and the drain continues with the next job.
+
+`scripts/worker.py poll-loop --once` runs a single cycle (for cron
+instead of supervisord); `drain-once` drains due jobs without
+polling.
 
 ### 2. KEV sync — daily
 
-Call `sync_kev(session)` (CISA Known Exploited Vulnerabilities
+```sh
+.venv/bin/python scripts/worker.py kev-sync
+```
+
+Calls `sync_kev(session)` (CISA Known Exploited Vulnerabilities
 catalog, CC0). It only flips the `kev` flag / `kev_date_added` on
 `cve_cache` rows and never overwrites NVD data. Idempotent — a second
 sync with the same catalog changes nothing.
+
+### 3. API keys — operator action, no HTTP route
+
+```sh
+DATABASE_URL=postgresql://eunoia@localhost/eunoia \
+  .venv/bin/python scripts/create_api_key.py --owner alice
+```
+
+Prints the plaintext key once (it is stored only as a SHA-256 hash
+and can never be recovered). There is deliberately no HTTP admin
+route for provisioning.
+
+## Harness notes (Task 14 minor, recorded)
+
+- **The harness is a peer of the MCP server, not a client.**
+  `run_loop` calls the search engine directly with the same
+  parameters the MCP `search_writeups` tool uses (limit 5/3,
+  pre_test/mid_test, hybrid), bypassing auth tiers and rate limits.
+  Its lookups are intentionally unmetered. Do not point the
+  harness at a shared registry without adding metering.
+- **`run_loop` with no session opens its own from the default
+  settings (the dev database)** — the same convention as
+  `search()`. Pass an explicit session for any other database.
+- **Only retrieval tokens are charged to the budget**, so the
+  prune (50%) / compact (65%) hooks cannot fire in a real run;
+  window-level token accounting for scratchpad/state belongs to
+  the planner. A run records that it finished before the
+  threshold (`budget_action` + `window_used_pct` in `coverage`).
 
 ## Recovery notes
 

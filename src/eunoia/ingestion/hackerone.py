@@ -54,6 +54,7 @@ from eunoia.embed import embed_writeup
 from eunoia.enrich import enrich_cve
 from eunoia.ingestion.jobs import enqueue_discovery, idempotency_key_for
 from eunoia.models import Job, Source, SourceHost, Writeup, WriteupEvent, WriteupSource, WriteupVuln
+from eunoia.safety.quality import quality_gate
 
 __all__ = [
     "HACKTIVITY_URL",
@@ -124,6 +125,23 @@ def _default_client() -> httpx.Client:
         or os.environ.get("http_proxy")
     )
     return httpx.Client(timeout=30.0, proxy=proxy or None, trust_env=False)
+
+
+def _default_url_checker(url: str) -> bool:
+    """Production URL check for the quality gate (spec §6.5 (a)).
+
+    HEAD the canonical URL, falling back to GET when the host refuses
+    HEAD (405); True only on HTTP 200. Any transport error is a
+    failure, never a pass. Uses the poller's NO_PROXY-safe client.
+    """
+    try:
+        with _default_client() as client:
+            resp = client.head(url, follow_redirects=True, timeout=10.0)
+            if resp.status_code == 405:
+                resp = client.get(url, follow_redirects=True, timeout=10.0)
+            return resp.status_code == 200
+    except Exception:
+        return False
 
 
 def _now() -> datetime:
@@ -418,19 +436,24 @@ def handle_discovery_job(
     model=None,
     client: httpx.Client | None = None,
     limiter=None,
+    url_checker=None,
 ) -> str:
     """Process one discovery job; returns ``"created"`` or ``"merged"``.
 
     Upsert first (dedup, never blind-insert), then the enrichment
-    pipeline (Task 6 classify → Task 7 enrich → Task 8 embed) on the
-    upserted writeup, for both the create and the merge path. ``model``
-    is an injectable encoder for tests; without one the production
-    model is loaded once and reused (``embed.get_model``). ``client`` /
-    ``limiter`` are forwarded to NVD enrichment (tests inject a mocked
-    HTTP client). The pipeline never fails the job: a step that raises
-    is recorded in the event detail (``pipeline_errors``) and the job
-    still completes — a downstream bug must not dead-letter a
-    discovery job.
+    pipeline (Task 6 classify → Task 16 quality gate → Task 7 enrich
+    → Task 8 embed) on the upserted writeup, for both the create and
+    the merge path. ``model`` is an injectable encoder for tests;
+    without one the production model is loaded once and reused
+    (``embed.get_model``). ``client`` / ``limiter`` are forwarded to
+    NVD enrichment (tests inject a mocked HTTP client).
+    ``url_checker`` is the quality gate's URL probe; without one the
+    production HEAD/GET check (``_default_url_checker``) runs — tests
+    must inject a stub, or the worker would do live HTTP. The
+    pipeline never fails the job: a step that raises is recorded in
+    the event detail (``pipeline_errors``) and the job still
+    completes — a downstream bug must not dead-letter a discovery
+    job.
     """
     payload: dict[str, Any] = dict(job.payload or {})
     canonical_url = payload["canonical_url"]
@@ -506,6 +529,7 @@ def handle_discovery_job(
             detail["candidate_of"] = matched.api_id
     detail.update(_run_enrichment_pipeline(
         session, writeup, model=model, client=client, limiter=limiter,
+        url_checker=url_checker,
     ))
     session.add(WriteupEvent(
         writeup_id=writeup.id,
@@ -524,17 +548,25 @@ def _run_enrichment_pipeline(
     model=None,
     client: httpx.Client | None = None,
     limiter=None,
+    url_checker=None,
 ) -> dict[str, Any]:
-    """Classify → enrich CVEs → embed one upserted writeup (R6 wiring).
+    """Classify → quality gate → enrich CVEs → embed one upserted writeup (R6 wiring + Task 16).
 
     Returns the pipeline detail recorded on the writeup's event:
-    ``vuln_class``, ``cves_enriched``, ``embed`` (``"embedded"`` /
+    ``vuln_class``, ``quality_gate`` (``passed`` / ``needs_review`` /
+    ``checks``), ``cves_enriched``, ``embed`` (``"embedded"`` /
     ``"skipped"`` / ``"failed"``) and ``pipeline_errors``. Every step
     is best-effort: a step that raises is recorded and the pipeline
     continues, so the discovery job still completes. Idempotent:
     classification fills a null class only, enrichment is cached
     (1-day TTL), and embedding skips when the template hash is
     unchanged — re-running the worker duplicates nothing.
+
+    The quality gate runs after classification (it needs the mapped
+    class) and sets ``writeup.quality_passed``. A hard failure does
+    NOT stop the pipeline — the record is kept with full data for
+    human review, but the shared serving gate hides it until a human
+    clears it (``quality_passed=True``).
     """
     errors: list[str] = []
     vuln_class: str | None = None
@@ -543,6 +575,29 @@ def _run_enrichment_pipeline(
         vuln_class = vuln_row.vuln_class
     except Exception as exc:
         errors.append(f"classification: {exc}")
+    gate_detail: dict[str, Any] | None = None
+    try:
+        gate = quality_gate(
+            canonical_url=writeup.canonical_url,
+            title=writeup.title,
+            author_name=writeup.author_name,
+            published_at=writeup.published_at or writeup.disclosed_at,
+            vuln_class=vuln_class,
+            excerpt=writeup.excerpt,
+            language=writeup.language,
+            url_checker=(
+                url_checker if url_checker is not None
+                else _default_url_checker
+            ),
+        )
+        writeup.quality_passed = gate.passed
+        gate_detail = {
+            "passed": gate.passed,
+            "needs_review": gate.needs_review,
+            "checks": dict(gate.checks),
+        }
+    except Exception as exc:
+        errors.append(f"quality_gate: {exc}")
     enriched: list[str] = []
     cve_ids: list[str] = []
     for row in session.query(WriteupVuln).filter_by(writeup_id=writeup.id).all():
@@ -561,6 +616,7 @@ def _run_enrichment_pipeline(
         errors.append(f"embed: {exc}")
     return {
         "vuln_class": vuln_class,
+        "quality_gate": gate_detail,
         "cves_enriched": enriched,
         "embed": embed_result,
         "pipeline_errors": errors,

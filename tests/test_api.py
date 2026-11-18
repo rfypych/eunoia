@@ -66,7 +66,7 @@ class KeywordEncoder:
 
 def _writeup(session, *, url, title, excerpt, author, status="active",
              language="en", published=None, source_id="hackerone",
-             source_type="hackerone_report"):
+             source_type="hackerone_report", quality_passed=None):
     w = Writeup(
         canonical_url=url,
         url_hash=url_hash(url),
@@ -81,6 +81,7 @@ def _writeup(session, *, url, title, excerpt, author, status="active",
         last_seen_at=NOW,
         language=language,
         status=status,
+        quality_passed=quality_passed,
     )
     session.add(w)
     session.flush()
@@ -553,3 +554,60 @@ def test_rate_limiter_windows():
     result = limiter.check("anon:1.2.3.4", "anon")
     assert result.allowed is False
     assert result.retry_after is not None and result.retry_after > 0
+
+
+# --- Task 16: shared serving gate + llms.txt route -------------------------
+
+
+def test_writeup_detail_retracted_is_gone(client, session):
+    w = session.query(Writeup).filter_by(status="retracted").one()
+    r = client.get(f"/v1/writeups/{w.api_id}")
+    assert r.status_code == 410
+    assert r.json()["error"]["code"] == "GONE"
+
+
+def test_writeup_detail_updated_serves(client, session):
+    w = session.query(Writeup).filter_by(status="active").first()
+    w.status = "updated"
+    session.commit()
+    r = client.get(f"/v1/writeups/{w.api_id}")
+    assert r.status_code == 200
+
+
+def test_writeup_markdown_retracted_is_gone(client, session):
+    w = session.query(Writeup).filter_by(status="retracted").one()
+    r = client.get(f"/v1/writeups/{w.api_id}.md")
+    assert r.status_code == 410
+    assert r.json()["error"]["code"] == "GONE"
+
+
+def test_writeup_detail_quality_failed_is_gone(client, session):
+    w = _writeup(
+        session, url="https://hackerone.com/reports/700099",
+        title="SSRF with dead URL", excerpt="A parser fetches URLs.",
+        author="alice")
+    w.quality_passed = False
+    session.commit()
+    r = client.get(f"/v1/writeups/{w.api_id}")
+    assert r.status_code == 410
+    assert r.json()["error"]["code"] == "GONE"
+
+
+def test_list_excludes_quality_failed_writeups(client, session):
+    w = _writeup(
+        session, url="https://hackerone.com/reports/700098",
+        title="SSRF with dead URL", excerpt="A parser fetches URLs.",
+        author="alice")
+    w.quality_passed = False
+    session.commit()
+    body = client.get("/v1/writeups").json()
+    assert body["total"] == 3  # fixture actives only; the failed row is out
+    assert all(row["id"] != w.api_id for row in body["items"])
+
+
+def test_llms_txt_served(client):
+    r = client.get("/llms.txt")
+    assert r.status_code == 200
+    assert "text/plain" in r.headers["content-type"]
+    assert r.text.startswith("# Eunoia")
+    assert "GET /v1/search" in r.text

@@ -33,12 +33,13 @@ from eunoia.config import get_settings
 from eunoia.db import get_engine
 from eunoia.golden import (
     Report,
+    load_corpus,
     load_expected,
     load_queries,
     measure_recall,
     seed_golden_corpus,
 )
-from eunoia.models import Base, Writeup
+from eunoia.models import Base, CveCache, Writeup
 from eunoia.search import search
 
 TEST_DATABASE_URL = "postgresql+psycopg://eunoia@127.0.0.1:5432/eunoia_test"
@@ -205,3 +206,16 @@ def test_harness_run_counts_queries_per_run(session, encoder, golden):
     queries_per_run = len(report.lookup1_calls) + len(report.lookup2_calls)
     assert queries_per_run >= 1
     assert report.retrieval_tokens <= 20_000
+
+
+def test_every_cve_in_corpus_has_complete_cve_cache_row(session, encoder, golden):
+    """DoD 2 (Task 16): every CVE in MVP writeups has cvss_score,
+    cwe_ids, and a KEV flag in cve_cache."""
+    cves = {w["cve_id"] for w in load_corpus()["writeups"] if w["cve_id"]}
+    assert cves, "corpus has no CVEs at all"
+    for cve_id in sorted(cves):
+        row = session.get(CveCache, cve_id)
+        assert row is not None, f"{cve_id} has no cve_cache row"
+        assert row.cvss_score is not None, f"{cve_id} has no cvss_score"
+        assert row.cwe_ids, f"{cve_id} has no cwe_ids"
+        assert row.kev is not None, f"{cve_id} has no KEV flag"

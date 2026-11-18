@@ -431,6 +431,11 @@ def _execute(scope: Scope, lab_target: str, *, session: Session,
         "findings_unverified": sum(
             1 for f in findings if f.status == "unverified"),
         "retrieval_tokens": budget.retrieval_used,
+        # DoD 7 (Task 16): record that the run finished before the 65%
+        # compaction line — "ok" here means the threshold was never
+        # reached, not that compaction ran.
+        "budget_action": budget.action(),
+        "window_used_pct": round(budget.usage_ratio * 100, 1),
         "budget_exhausted": state.budget_exhausted,
     }
     state.record_audit("report_done", {"findings": len(findings)})

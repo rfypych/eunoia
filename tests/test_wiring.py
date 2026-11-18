@@ -27,6 +27,7 @@ from eunoia.ingestion.hackerone import handle_discovery_job
 from eunoia.ingestion.jobs import dispatch_job, enqueue_discovery, process_job
 from eunoia.ingestion.nvd import NVD_API_URL, NvdError, NvdRateLimitedError, TokenBucket
 from eunoia.models import Base, CveCache, Embedding, Job, Source, Writeup, WriteupEvent, WriteupVuln
+from eunoia.search import search
 
 TEST_DATABASE_URL = "postgresql://eunoia@localhost:5432/eunoia_test"
 
@@ -175,7 +176,7 @@ def test_worker_pipeline_fills_class_enriches_and_embeds(
     stub = StubEncoder()
     with respx.mock as router:
         _mock_nvd_200(router)
-        assert handle_discovery_job(session, job, model=stub, client=http_client, limiter=limiter) == "created"
+        assert handle_discovery_job(session, job, model=stub, client=http_client, limiter=limiter, url_checker=lambda url: True) == "created"
     vuln = session.query(WriteupVuln).one()
     assert vuln.vuln_class == "SSRF"  # CWE-918 -> SSRF (Task 6)
     assert vuln.cwe_id == "CWE-918"
@@ -197,7 +198,7 @@ def test_worker_rerun_is_idempotent(session, hackerone_source, http_client, limi
     stub = StubEncoder()
     with respx.mock as router:
         _mock_nvd_200(router)
-        assert handle_discovery_job(session, job1, model=stub, client=http_client, limiter=limiter) == "created"
+        assert handle_discovery_job(session, job1, model=stub, client=http_client, limiter=limiter, url_checker=lambda url: True) == "created"
     mirror = _rich_event(
         canonical_url="https://medium.com/@x/ssrf-abc",
         external_id="hackerone:111",
@@ -205,7 +206,7 @@ def test_worker_rerun_is_idempotent(session, hackerone_source, http_client, limi
     job2 = enqueue_discovery(session, source_id="hackerone", event=mirror)
     with respx.mock as router:
         _mock_nvd_200(router)
-        assert handle_discovery_job(session, job2, model=stub, client=http_client, limiter=limiter) == "merged"
+        assert handle_discovery_job(session, job2, model=stub, client=http_client, limiter=limiter, url_checker=lambda url: True) == "merged"
     assert session.query(Writeup).count() == 1
     assert session.query(WriteupVuln).count() == 1
     assert session.query(Embedding).count() == 1
@@ -224,7 +225,7 @@ def test_enrichment_failure_does_not_fail_job(
     monkeypatch.setattr(h1, "enrich_cve", _boom)
     job = enqueue_discovery(session, source_id="hackerone", event=_rich_event())
     stub = StubEncoder()
-    assert handle_discovery_job(session, job, model=stub) == "created"
+    assert handle_discovery_job(session, job, model=stub, url_checker=lambda url: True) == "created"
     writeup = session.query(Writeup).one()
     assert session.query(WriteupVuln).one().vuln_class == "SSRF"
     assert session.query(Embedding).count() == 1  # embed still ran
@@ -246,7 +247,7 @@ def test_embedding_failure_does_not_fail_job(
     job = enqueue_discovery(session, source_id="hackerone", event=_rich_event())
     with respx.mock as router:
         _mock_nvd_200(router)
-        assert handle_discovery_job(session, job, client=http_client, limiter=limiter) == "created"
+        assert handle_discovery_job(session, job, client=http_client, limiter=limiter, url_checker=lambda url: True) == "created"
     writeup = session.query(Writeup).one()
     assert session.query(WriteupVuln).one().vuln_class == "SSRF"
     assert session.get(CveCache, CVE_ID) is not None  # enrich still ran
@@ -284,7 +285,7 @@ def test_dispatch_discovery_routes_to_worker(
     stub = StubEncoder()
     with respx.mock as router:
         _mock_nvd_200(router)
-        assert dispatch_job(session, job, model=stub, client=http_client, limiter=limiter) == "created"
+        assert dispatch_job(session, job, model=stub, client=http_client, limiter=limiter, url_checker=lambda url: True) == "created"
     assert session.query(Writeup).count() == 1
     assert session.query(WriteupVuln).one().vuln_class == "SSRF"
 
@@ -371,3 +372,84 @@ def test_nvd_refresh_404_raises_and_retries(session, http_client, limiter):
     assert retried.status == "pending"  # not "done"
     assert retried.attempts == 1
     assert session.get(CveCache, CVE_ID) is None
+
+
+# ---------------------------------------------------------------------------
+# Task 16: quality gate wired into the discovery worker (spec §6.5)
+# ---------------------------------------------------------------------------
+
+_ALLOW_URL = lambda url: True  # noqa: E731 - stub checker for tests
+_DENY_URL = lambda url: False  # noqa: E731 - stub checker for tests
+
+
+def test_quality_gate_runs_on_discovery_job(
+    session, hackerone_source, http_client, limiter
+):
+    job = enqueue_discovery(session, source_id="hackerone", event=_rich_event())
+    stub = StubEncoder()
+    with respx.mock as router:
+        _mock_nvd_200(router)
+        assert handle_discovery_job(
+            session, job, model=stub, client=http_client, limiter=limiter,
+            url_checker=_ALLOW_URL) == "created"
+    writeup = session.query(Writeup).one()
+    assert writeup.quality_passed is True
+    event = session.query(WriteupEvent).filter_by(
+        writeup_id=writeup.id, event="created").one()
+    gate = event.detail["quality_gate"]
+    assert gate["passed"] is True
+    assert gate["needs_review"] is False
+    assert gate["checks"]["canonical_url"] == "pass"
+    assert gate["checks"]["secrets"] == "pass"
+
+
+def test_quality_gate_failure_quarantines_writeup(
+    session, hackerone_source, http_client, limiter
+):
+    job = enqueue_discovery(session, source_id="hackerone", event=_rich_event())
+    stub = StubEncoder()
+    with respx.mock as router:
+        _mock_nvd_200(router)
+        assert handle_discovery_job(
+            session, job, model=stub, client=http_client, limiter=limiter,
+            url_checker=_DENY_URL) == "created"
+    writeup = session.query(Writeup).one()
+    assert writeup.quality_passed is False
+    event = session.query(WriteupEvent).filter_by(
+        writeup_id=writeup.id, event="created").one()
+    assert event.detail["quality_gate"]["passed"] is False
+    assert event.detail["quality_gate"]["checks"]["canonical_url"] == "fail"
+    # Not served by search while quarantined ...
+    query = {"evidence_pattern": "ssrf", "mode": "pre_test"}
+    assert not any(
+        r.writeup_id == writeup.api_id
+        for r in search(query, session=session, model=stub,
+                        retrieval="keyword"))
+    # ... and served again once a human clears it (quality_passed=True).
+    writeup.quality_passed = True
+    session.commit()
+    assert any(
+        r.writeup_id == writeup.api_id
+        for r in search(query, session=session, model=stub,
+                        retrieval="keyword"))
+
+
+def test_quality_gate_secret_in_excerpt_blocks(
+    session, hackerone_source, http_client, limiter
+):
+    event = _rich_event(
+        excerpt="leaked token ghp_" + "A" * 36,
+        text="ssrf via pdf parser",
+    )
+    job = enqueue_discovery(session, source_id="hackerone", event=event)
+    stub = StubEncoder()
+    with respx.mock as router:
+        _mock_nvd_200(router)
+        assert handle_discovery_job(
+            session, job, model=stub, client=http_client, limiter=limiter,
+            url_checker=_ALLOW_URL) == "created"
+    writeup = session.query(Writeup).one()
+    assert writeup.quality_passed is False
+    detail = session.query(WriteupEvent).filter_by(
+        writeup_id=writeup.id, event="created").one().detail
+    assert detail["quality_gate"]["checks"]["secrets"] == "fail"

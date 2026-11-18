@@ -38,6 +38,7 @@ from eunoia.config import get_settings
 from eunoia.db import get_engine
 from eunoia.embed import MODEL_NAME, MODEL_VERSION, get_model
 from eunoia.models import CveCache, Embedding, Writeup, WriteupVuln
+from eunoia.safety.serving import SERVABLE_STATUSES
 from eunoia.ranking import (
     ScoreComponents,
     breakdown_mid_test,
@@ -351,7 +352,8 @@ def search(
             .outerjoin(
                 WriteupVuln, WriteupVuln.writeup_id == Writeup.id
             )
-            .where(Writeup.status == "active")
+            .where(Writeup.status.in_(SERVABLE_STATUSES))
+            .where(Writeup.quality_passed.is_not(False))
             .where(
                 or_(Writeup.language.is_(None), Writeup.language == "en")
             )

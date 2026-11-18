@@ -26,6 +26,7 @@ unwrap the cause.
 from __future__ import annotations
 
 import argparse
+import os
 import uuid
 from typing import Any
 
@@ -54,6 +55,7 @@ from eunoia.config import get_settings
 from eunoia.db import get_engine
 from eunoia.models import Writeup, WriteupVuln
 from eunoia.safety.secrets_scan import SecretFoundError
+from eunoia.safety.serving import NotServableError, ensure_servable
 from eunoia.search import search
 from eunoia.skills import get_skill_text
 
@@ -393,6 +395,10 @@ def build_mcp_server(
             if writeup is None:
                 raise McpToolError(
                     "NOT_FOUND", f"No writeup with id {id!r}.")
+            try:
+                ensure_servable(writeup)
+            except NotServableError as exc:
+                raise McpToolError("GONE", str(exc))
             body = _writeup_dict(session, writeup)
             session.commit()
         body["technique_summary"] = {
@@ -430,9 +436,9 @@ def build_mcp_server(
             except SecretFoundError as exc:
                 # Safety refusal, not a takedown: never GONE.
                 raise McpToolError("SECRET_FOUND", str(exc))
-            except ValueError as exc:
-                # Retracted / taken-down / duplicate: gone, never a 500
-                # (Ruling R10, same as the REST skill endpoint).
+            except NotServableError as exc:
+                # Retracted / taken-down / duplicate / quality-failed:
+                # gone, never a 500 (Ruling R10, Task 16 shared gate).
                 raise McpToolError("GONE", str(exc))
             session.commit()
         return {"id": api_id, "skill": skill}
@@ -563,6 +569,10 @@ def build_mcp_server(
             if writeup is None:
                 raise ResourceNotFoundError(
                     f"NOT_FOUND: No writeup with id {writeup_id!r}.")
+            try:
+                ensure_servable(writeup)
+            except NotServableError as exc:
+                raise McpResourceError("GONE", str(exc))
             text = _render_writeup_markdown(session, writeup)
             session.commit()
         return text
@@ -588,7 +598,7 @@ def build_mcp_server(
             except SecretFoundError as exc:
                 # Safety refusal, not a takedown: never GONE.
                 raise McpResourceError("SECRET_FOUND", str(exc))
-            except ValueError as exc:
+            except NotServableError as exc:
                 raise McpResourceError("GONE", str(exc))
             session.commit()
         return skill
@@ -609,6 +619,10 @@ def build_mcp_server(
             if writeup is None:
                 raise McpToolError(
                     "NOT_FOUND", f"No writeup with id {id!r}.")
+            try:
+                ensure_servable(writeup)
+            except NotServableError as exc:
+                raise McpToolError("GONE", str(exc))
             api_id = writeup.api_id
             title = writeup.title
             canonical_url = writeup.canonical_url
@@ -686,7 +700,10 @@ def main(argv: list[str] | None = None) -> None:
     stdio (local wrapper, default) or Streamable HTTP (remote).
     For stdio there are no request headers, so the tier is anonymous
     unless ``--api-key`` is given (verified once at startup; the
-    plaintext is never stored).
+    plaintext is never stored). The key may also come from the
+    ``EUNOIA_API_KEY`` environment variable — prefer it: a key passed
+    on the command line is visible to other local processes in the
+    process list (Task 11 minor, Task 16).
     """
     parser = argparse.ArgumentParser(
         prog="eunoia-mcp", description="Eunoia MCP server (read-only).")
@@ -697,14 +714,17 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument(
         "--api-key", default=None,
-        help="API key for stdio mode (keyed tier); default is anonymous.")
+        help="API key for stdio mode (keyed tier); default is anonymous. "
+        "Prefer the EUNOIA_API_KEY environment variable: a key on the "
+        "command line is visible in the process list.")
     args = parser.parse_args(argv)
 
     default_tier = "anon"
-    if args.api_key:
+    api_key = args.api_key or os.environ.get("EUNOIA_API_KEY")
+    if api_key:
         engine = get_engine(get_settings())
         with Session(engine) as session:
-            row = verify_api_key(session, args.api_key)
+            row = verify_api_key(session, api_key)
             if row is None:
                 raise SystemExit("Invalid or revoked API key.")
             default_tier = row.tier or "free"

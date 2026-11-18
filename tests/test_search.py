@@ -321,3 +321,14 @@ def test_old_tomcat_ranks_below_recent_spring(session, encoder, corpus):
     titles = [r.title for r in results]
     assert titles.index("SSRF via PDF parser in Spring Boot 3.2.0") < \
         titles.index("RCE in Apache Tomcat 10.1 request handling")
+
+
+def test_search_serves_updated_writeups(session, encoder, corpus):
+    """Shared serving gate (Task 16): 'updated' is servable like
+    'active' (Ruling R10), not excluded from search."""
+    w = corpus["spring_ssrf"]
+    w.status = "updated"
+    session.commit()
+    results = search({"tech": ["spring-boot"]}, limit=10,
+                     session=session, model=encoder)
+    assert any(r.writeup_id == w.api_id for r in results)

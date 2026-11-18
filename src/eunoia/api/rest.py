@@ -11,6 +11,7 @@ Endpoints (all under ``/v1``; OpenAPI 3.x at ``/api/v1/openapi.json``):
   hybrid, default hybrid for keyed callers, keyword for anon
 * ``GET /v1/programs`` / ``/v1/authors`` / ``/v1/vuln-classes`` — facets
 * ``GET /v1/status`` — public, no key (see ``eunoia.api.status``)
+* ``GET /llms.txt`` — llms.txt index (Task 12 renders, Task 16 serves)
 * ``POST /v1/submissions`` — review queue; never auto-indexes
 
 Contract notes (binding handoffs from Task 9):
@@ -49,8 +50,10 @@ from eunoia.api.rate_limit import RateLimiter
 from eunoia.api.status import build_status
 from eunoia.config import Settings, get_settings
 from eunoia.db import get_engine
+from eunoia.llms import render_llms_txt
 from eunoia.models import Source, Submission, Writeup, WriteupSource, WriteupVuln
 from eunoia.safety.secrets_scan import SecretFoundError
+from eunoia.safety.serving import NotServableError, ensure_servable
 from eunoia.search import SearchResult, search
 from eunoia.skills import get_skill_text
 
@@ -372,8 +375,17 @@ def _list_filters(
     tech: str | None,
     status: str,
 ):
-    """WHERE clauses; vuln fields use EXISTS so one writeup stays one row."""
-    filters = [Writeup.status == status]
+    """WHERE clauses; vuln fields use EXISTS so one writeup stays one row.
+
+    A record that failed the quality gate (``quality_passed is False``)
+    is never listed, whatever ``status`` filter the caller asks for
+    (Task 16 shared serving gate). An explicit ``status=retracted``
+    filter still lists retracted rows — that is the review-queue query
+    surface, pinned by Task 10 tests, not agent serving; the detail
+    endpoints below refuse those rows with 410 Gone.
+    """
+    filters = [Writeup.status == status,
+               Writeup.quality_passed.is_not(False)]
     if q:
         pattern = _like_pattern(q)
         filters.append(
@@ -717,6 +729,10 @@ def create_app(
         """Markdown rendering of one writeup record (metadata + links,
         never full text — the registry does not store it)."""
         writeup = _get_writeup_or_404(session, raw_id)
+        try:
+            ensure_servable(writeup)
+        except NotServableError as exc:
+            raise ApiError(410, "GONE", str(exc))
         body = _writeup_dict(session, writeup)
         vuln = body["vulnerability"]
         lines = [
@@ -764,13 +780,17 @@ def create_app(
             skill = get_skill_text(writeup.api_id, session=session)
         except SecretFoundError as exc:
             raise ApiError(503, "SECRET_FOUND", str(exc))
-        except ValueError as exc:
+        except NotServableError as exc:
             raise ApiError(410, "GONE", str(exc))
         return PlainTextResponse(skill, media_type="text/markdown")
 
     @app.get("/v1/writeups/{raw_id}")
     def get_writeup(raw_id: str, session: Session = Depends(_session)):
         writeup = _get_writeup_or_404(session, raw_id)
+        try:
+            ensure_servable(writeup)
+        except NotServableError as exc:
+            raise ApiError(410, "GONE", str(exc))
         return _writeup_dict(session, writeup)
 
     @app.get("/v1/search")
@@ -971,6 +991,12 @@ def create_app(
     def get_status(session: Session = Depends(_session)):
         """Public, no key. A blocked source is visible here."""
         return build_status(session)
+
+    @app.get("/llms.txt")
+    def get_llms_txt(session: Session = Depends(_session)):
+        """llms.txt index (Task 12 renders it; Task 16 serves it)."""
+        return PlainTextResponse(
+            render_llms_txt(session=session), media_type="text/plain")
 
     @app.post("/v1/submissions", status_code=201)
     def create_submission(

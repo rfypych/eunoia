@@ -107,6 +107,12 @@ class Writeup(Base):
     license_note: Mapped[str | None] = mapped_column(Text)
     takedown_at: Mapped[datetime | None] = mapped_column(_ts())
     takedown_reason: Mapped[str | None] = mapped_column(Text)
+    # Task 16 (spec §6.5): quality-gate verdict. None = not yet gated
+    # (rows seeded before the gate, or a gate run without a URL
+    # checker) — servable. False = a hard check failed (URL / fields /
+    # secrets); the record is quarantined and the shared serving gate
+    # hides it until a human clears it (quality_passed=True).
+    quality_passed: Mapped[bool | None] = mapped_column(Boolean)
 
     @property
     def api_id(self) -> str:

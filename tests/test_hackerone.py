@@ -354,7 +354,7 @@ def test_parse_hacktivity_item_extracts_platform_fields():
 
 def test_worker_creates_writeup_from_discovery_job(session, hackerone_source):
     job = enqueue_discovery(session, source_id="hackerone", event=_event())
-    result = handle_discovery_job(session, job)
+    result = handle_discovery_job(session, job, url_checker=lambda url: True)
     assert result == "created"
     writeup = session.query(Writeup).one()
     assert writeup.canonical_url == "https://hackerone.com/reports/111"
@@ -365,11 +365,11 @@ def test_worker_creates_writeup_from_discovery_job(session, hackerone_source):
 
 def test_worker_merges_mirror_url_by_external_id(session, hackerone_source):
     job1 = enqueue_discovery(session, source_id="hackerone", event=_event())
-    handle_discovery_job(session, job1)
+    handle_discovery_job(session, job1, url_checker=lambda url: True)
     mirror = _event(canonical_url="https://medium.com/@x/ssrf-abc",
                     external_id="hackerone:111")
     job2 = enqueue_discovery(session, source_id="hackerone", event=mirror)
-    assert handle_discovery_job(session, job2) == "merged"
+    assert handle_discovery_job(session, job2, url_checker=lambda url: True) == "merged"
     assert session.query(Writeup).count() == 1  # one logical writeup
     writeup = session.query(Writeup).one()
     urls = {ws.source_url for ws in session.query(WriteupSource).filter_by(writeup_id=writeup.id)}
@@ -382,7 +382,7 @@ def test_worker_records_near_dup_candidate(session, hackerone_source):
     # row's stored SimHash is set to the candidate's SimHash (distance 0)
     # while its content hash differs — a genuine near-dup, never a merge.
     job1 = enqueue_discovery(session, source_id="hackerone", event=_event())
-    assert handle_discovery_job(session, job1) == "created"
+    assert handle_discovery_job(session, job1, url_checker=lambda url: True) == "created"
     existing = session.query(Writeup).one()
     cand_text = normalize_text("IDOR on profile API")  # job2 text: title + empty excerpt
     existing.simhash = simhash_to_db(simhash64(cand_text))
@@ -393,7 +393,7 @@ def test_worker_records_near_dup_candidate(session, hackerone_source):
         "title": "IDOR on profile API",
         "disclosed_at": "2026-11-18T09:00:00.000Z",
     })
-    assert handle_discovery_job(session, job2) == "created"
+    assert handle_discovery_job(session, job2, url_checker=lambda url: True) == "created"
     assert session.query(Writeup).count() == 2  # near-dup never auto-merges
     created = session.query(Writeup).filter_by(
         canonical_url="https://hackerone.com/reports/222").one()
@@ -429,7 +429,7 @@ def test_worker_records_title_candidate(session, hackerone_source):
     event = _event()
     event["author_name"] = "r"
     job = enqueue_discovery(session, source_id="hackerone", event=event)
-    assert handle_discovery_job(session, job) == "created"
+    assert handle_discovery_job(session, job, url_checker=lambda url: True) == "created"
     created = session.query(Writeup).filter_by(
         canonical_url="https://hackerone.com/reports/111").one()
     ev = session.query(WriteupEvent).filter_by(

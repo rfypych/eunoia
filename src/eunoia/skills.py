@@ -28,6 +28,7 @@ from eunoia.config import get_settings
 from eunoia.db import get_engine
 from eunoia.models import Writeup, WriteupVuln
 from eunoia.safety.secrets_scan import SecretFoundError, scan_secrets
+from eunoia.safety.serving import ensure_servable
 
 MAX_NAME_LEN = 64
 MAX_BODY_LINES = 500
@@ -229,13 +230,15 @@ def get_skill_text(writeup_id: str | uuid.UUID,
                    session: Session | None = None) -> str:
     """Per-writeup SKILL.md text for one writeup id.
 
-    Raises ``ValueError`` for an unknown id and for a writeup whose
-    status is not ``active``/``updated``: a retracted or taken-down
-    disclosure is removed from serving and kept only as a stub
-    (Ruling R10), so no skill is generated for it. Raises
-    ``SecretFoundError`` (a distinct type, not ``ValueError``) when
-    the rendered skill trips the secret scan, so serving layers do
-    not misreport the safety refusal as 410 Gone.
+    Raises ``ValueError`` for an unknown id. Raises
+    ``NotServableError`` (Task 16 shared serving gate, Ruling R10)
+    for a writeup whose status is not ``active``/``updated`` or
+    whose quality gate failed: a retracted or taken-down disclosure
+    is removed from serving and kept only as a stub, so no skill is
+    generated for it. Raises ``SecretFoundError`` (a distinct type,
+    not ``ValueError``) when the rendered skill trips the secret
+    scan, so serving layers do not misreport the safety refusal as
+    410 Gone.
     """
     own_session = session is None
     if own_session:
@@ -243,11 +246,7 @@ def get_skill_text(writeup_id: str | uuid.UUID,
     assert session is not None
     try:
         writeup = _resolve_writeup(writeup_id, session)
-        if writeup.status not in ("active", "updated"):
-            raise ValueError(
-                f"writeup {writeup.api_id} is {writeup.status}; "
-                "retracted or taken-down content is not served"
-            )
+        ensure_servable(writeup)
         vuln = _first_vuln(session, writeup.id)
         text = _render_writeup_skill(writeup, vuln)
         # Task 13 (spec §6.5 gate (d)): defense in depth — the renderer

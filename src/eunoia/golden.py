@@ -174,6 +174,7 @@ def seed_golden_corpus(session: Session, model=None) -> dict:
             epss=kev["epss"],
             epss_percentile=0.99,
             cvss_score=kev["cvss_score"],
+            cwe_ids=kev.get("cwe_ids") or None,
             fetched_at=now,
             expires_at=now + timedelta(days=1),
         ))

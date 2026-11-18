@@ -579,3 +579,47 @@ def test_http_bad_key_is_tool_error_not_500(http_client):
     body = resp.json()
     assert body["result"]["isError"] is True, body
     assert "UNAUTHORIZED" in body["result"]["content"][0]["text"]
+
+
+# --- Task 16: shared serving gate ------------------------------------------
+
+
+def test_get_writeup_retracted_is_gone(mcp_client, seed):
+    with pytest.raises(McpToolError) as excinfo:
+        mcp_client.call("get_writeup", {"id": seed["retracted"].api_id})
+    assert excinfo.value.code == "GONE"
+
+
+def test_get_writeup_quality_failed_is_gone(mcp_client, session):
+    w = _writeup(
+        session, title="SSRF with dead URL",
+        excerpt="A parser fetches URLs.",
+        program="Acme Spring", vuln_class="SSRF", cwe="CWE-918",
+    )
+    w.quality_passed = False
+    session.commit()
+    with pytest.raises(McpToolError) as excinfo:
+        mcp_client.call("get_writeup", {"id": w.api_id})
+    assert excinfo.value.code == "GONE"
+
+
+def _chain_text(excinfo):
+    chain = []
+    exc = excinfo.value
+    while exc is not None:
+        chain.append(str(exc))
+        exc = exc.__cause__ or exc.__context__
+    return chain
+
+
+def test_resource_writeup_retracted_is_gone(mcp_client, seed):
+    with pytest.raises(Exception) as excinfo:
+        mcp_client.read_resource(f"writeup://{seed['retracted'].api_id}")
+    assert any("GONE" in part for part in _chain_text(excinfo))
+
+
+def test_prompt_learn_from_writeup_retracted_is_gone(mcp_client, seed):
+    with pytest.raises(Exception) as excinfo:
+        mcp_client.get_prompt(
+            "learn-from-writeup", {"id": seed["retracted"].api_id})
+    assert any("GONE" in part for part in _chain_text(excinfo))
