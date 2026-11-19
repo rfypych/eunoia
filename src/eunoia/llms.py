@@ -26,7 +26,7 @@ def _own_session() -> Session:
 
 def _dedupe_writeups(writeups: list[Writeup]) -> list[Writeup]:
     """One entry per writeup id, first occurrence wins (a writeup with
-    several vuln rows joins once per row — Task 12 triage item)."""
+    several vuln rows joins once per row)."""
     seen: set = set()
     out: list[Writeup] = []
     for writeup in writeups:
