@@ -26,6 +26,7 @@ from eunoia.ingestion.hackerone import (
     PollResult,
     RateLimitedError,
     handle_discovery_job,
+    normalize_cwe,
     parse_hacktivity_item,
     poll_hackerone,
 )
@@ -37,7 +38,7 @@ from eunoia.ingestion.jobs import (
     mark_job_failed,
     process_job,
 )
-from eunoia.models import Base, Job, Source, SourceHost, Writeup, WriteupEvent, WriteupSource
+from eunoia.models import Base, Job, Source, SourceHost, Writeup, WriteupEvent, WriteupSource, WriteupVuln
 
 TEST_DATABASE_URL = "postgresql+psycopg://eunoia@localhost:5432/eunoia_test"
 
@@ -361,6 +362,73 @@ def test_parse_hacktivity_item_zero_bounty_is_not_verified():
     parsed_none = parse_hacktivity_item(
         _item(113, "SSRF via PDF parser", awarded=None))
     assert parsed_none["bounty_verified"] is False
+
+
+def test_parse_hacktivity_item_normalizes_live_cwe_names():
+    """Deploy 2026-11-19: the live API's `cwe` is a weakness NAME, not
+    a CWE id — the first production poll crashed every discovery job
+    (StringDataRightTruncation on VARCHAR(16) cwe_id). Values below
+    are verbatim from a live Hacktivity page (50 items, 2026-11-19)."""
+    assert normalize_cwe("Cross-Site Request Forgery (CSRF)") == "CWE-352"
+    assert normalize_cwe("Path Traversal") == "CWE-22"
+    assert normalize_cwe("Cross-site Scripting (XSS) - Reflected") == "CWE-79"
+    assert normalize_cwe("Cross-site Scripting (XSS) - Stored") == "CWE-79"
+    assert normalize_cwe("Improper Access Control - Generic") == "CWE-284"
+    assert normalize_cwe("Uncontrolled Resource Consumption") == "CWE-400"
+    assert normalize_cwe("Insecure Direct Object Reference (IDOR)") == "CWE-639"
+    assert normalize_cwe("SQL Injection") == "CWE-89"
+    assert normalize_cwe("Server-Side Request Forgery (SSRF)") == "CWE-918"
+    assert normalize_cwe("Heap Overflow") == "CWE-122"
+    assert normalize_cwe("OS Command Injection") == "CWE-78"
+    parsed = parse_hacktivity_item(
+        _item(114, "CSRF on settings form", cwe="Cross-Site Request Forgery (CSRF)"))
+    assert parsed["cwe"] == "CWE-352"
+
+
+def test_parse_hacktivity_item_cwe_id_passthrough():
+    assert normalize_cwe("CWE-918") == "CWE-918"
+    assert normalize_cwe("cwe-79") == "CWE-79"
+    assert normalize_cwe("prefix CWE-89 suffix") == "CWE-89"
+    assert normalize_cwe(None) is None
+    assert normalize_cwe("") is None
+
+
+def test_parse_hacktivity_item_unknown_cwe_name_is_dropped_not_stored():
+    """A weakness name with no confident single-CWE mapping must not
+    be stored verbatim in cwe_id — it would crash the insert and is
+    not a CWE id. The row still classifies (unclassified + review)."""
+    assert normalize_cwe("Business Logic Errors") is None
+    parsed = parse_hacktivity_item(
+        _item(115, "Logic flaw in checkout", cwe="Business Logic Errors"))
+    assert parsed["cwe"] is None
+
+
+def test_parse_hacktivity_item_normalizes_live_severity_case():
+    """Deploy 2026-11-19: severity_rating is capitalized ("Medium",
+    "Critical"); the severity enum is lowercase-only, so the raw
+    value would fail the enum cast (and _SEVERITIES dropped it)."""
+    assert parse_hacktivity_item(
+        _item(116, "t", severity="High"))["severity"] == "high"
+    assert parse_hacktivity_item(
+        _item(117, "t", severity="None"))["severity"] == "none"
+    assert parse_hacktivity_item(
+        _item(118, "t", severity=None))["severity"] is None
+
+
+def test_worker_creates_writeup_from_live_shaped_item(session, hackerone_source):
+    """Deploy 2026-11-19: a discovery job built from a live-shaped
+    item (weakness name + capitalized severity) must insert without
+    error, with a real CWE id and severity on the vuln row."""
+    parsed = parse_hacktivity_item(_item(
+        201, "CSRF on settings form",
+        cwe="Cross-Site Request Forgery (CSRF)", severity="High"))
+    assert parsed["cwe"] == "CWE-352"
+    assert parsed["severity"] == "high"
+    job = enqueue_discovery(session, source_id="hackerone", event=parsed)
+    assert handle_discovery_job(session, job, url_checker=lambda url: True) == "created"
+    vuln = session.query(WriteupVuln).one()
+    assert vuln.cwe_id == "CWE-352"
+    assert vuln.severity == "high"
 
 
 def test_worker_creates_writeup_from_discovery_job(session, hackerone_source):
