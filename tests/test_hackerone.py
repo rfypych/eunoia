@@ -431,6 +431,29 @@ def test_worker_creates_writeup_from_live_shaped_item(session, hackerone_source)
     assert vuln.severity == "high"
 
 
+def test_worker_tolerates_stale_pre_fix_payload(session, hackerone_source):
+    """Deploy 2026-11-19: jobs enqueued by the pre-fix parser carry
+    the RAW weakness name / capitalized severity in their stored
+    payload. The worker must normalize at the point of use, so the
+    50 jobs already queued on the production box drain instead of
+    crashing on the VARCHAR(16) / enum cast."""
+    stale = _event(
+        canonical_url="https://hackerone.com/reports/202",
+        external_id="hackerone:202",
+    )
+    stale.update({
+        "title": "CSRF on settings form",
+        "text": "csrf on settings form",
+        "cwe": "Cross-Site Request Forgery (CSRF)",
+        "severity": "High",
+    })
+    job = enqueue_discovery(session, source_id="hackerone", event=stale)
+    assert handle_discovery_job(session, job, url_checker=lambda url: True) == "created"
+    vuln = session.query(WriteupVuln).one()
+    assert vuln.cwe_id == "CWE-352"
+    assert vuln.severity == "high"
+
+
 def test_worker_creates_writeup_from_discovery_job(session, hackerone_source):
     job = enqueue_discovery(session, source_id="hackerone", event=_event())
     result = handle_discovery_job(session, job, url_checker=lambda url: True)

@@ -603,6 +603,15 @@ def handle_discovery_job(
     job.
     """
     payload: dict[str, Any] = dict(job.payload or {})
+    # Deploy 2026-11-19: jobs enqueued by the pre-fix parser carry the
+    # raw weakness name / capitalized severity in their stored payload.
+    # Normalize here as well as at parse time, so stale queue entries
+    # cannot crash the drain (StringDataRightTruncation / enum cast).
+    payload["cwe"] = normalize_cwe(payload.get("cwe"))
+    raw_severity = payload.get("severity")
+    payload["severity"] = (
+        raw_severity.lower() if isinstance(raw_severity, str) else None
+    )
     canonical_url = payload["canonical_url"]
     text = payload.get("text") or f"{payload.get('title', '')} {payload.get('excerpt', '')}"
     candidate = {
