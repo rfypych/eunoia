@@ -40,13 +40,14 @@ Point your MCP client at the hosted server (Streamable HTTP, stateless, `POST /m
 {
   "mcpServers": {
     "eunoia": {
+      "type": "http",
       "url": "http://129.150.57.82:10005/mcp"
     }
   }
 }
 ```
 
-MCP endpoint: [mcp](http://129.150.57.82:10005/mcp). The server exposes 6 read-only tools: `search_writeups`, `get_writeup`, `get_writeup_skill`, `list_vuln_classes`, `list_programs`, `check_freshness`, plus 2 resources and 1 prompt. Local stdio mode is also available: `python -m eunoia.mcp_server`. Client-specific config files and registry listing are planned work, not done yet.
+MCP endpoint: [mcp](http://129.150.57.82:10005/mcp). The server exposes 6 read-only tools: `search_writeups`, `get_writeup`, `get_writeup_skill`, `list_vuln_classes`, `list_programs`, `check_freshness`, plus 2 resource templates and 1 prompt. Local stdio mode is also available: `python -m eunoia.mcp_server`. Client-specific config files and registry listing are planned work, not done yet.
 
 Example agent prompt:
 
@@ -62,7 +63,7 @@ curl "http://129.150.57.82:10004/v1/search?q=SQL+injection&limit=5"
 curl "http://129.150.57.82:10004/v1/search?q=IDOR&lookup=mid_test&limit=3"
 ```
 
-Anonymous callers get keyword mode only, limit up to 20 (default 5). Semantic and hybrid modes need an API key.
+Anonymous callers get keyword mode only, limit up to 10 (default 5). Semantic and hybrid modes need an API key.
 
 ## What you can search
 

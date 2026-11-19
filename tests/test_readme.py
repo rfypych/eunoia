@@ -7,12 +7,17 @@ Meta-tests, no database needed. They pin the T4 acceptance criteria:
   of what can be searched, what it does NOT do, an FAQ, and the MIT
   licence.
 - Every relative link in the README resolves to a file in the repo.
-- Every absolute link is one of the URLs verified live by the
-  implementer on 2026-11-19 (API status/search/writeups, llms.txt,
-  OpenAPI, hosted MCP, GitHub repo). No other absolute URL may appear,
-  so no invented or dead link can sneak in.
-- No placeholder strings, and the website/demo is not claimed as live
-  (it is T6 work, still pending).
+- Every absolute URL in the README is pinned, including bare URLs
+  inside code blocks (not just markdown links): each one must be an
+  endpoint verified live by the implementer on 2026-11-19, a
+  /v1/search query on that same host, or the one real canonical
+  HackerOne link used as the search example. No other absolute URL
+  may appear, so no invented or dead link can sneak in.
+- The one-minute sections are pinned by content, not just by a
+  keyword: the one-sentence pitch, who it is for, the example agent
+  prompt, a CLI example, and the search table must all be present.
+- No placeholder strings, and every paragraph mentioning the
+  website/demo must say it is not yet live (it is T6 work).
 """
 
 from __future__ import annotations
@@ -39,10 +44,18 @@ VERIFIED_ABSOLUTE_URLS = {
 }
 
 _LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+_URL_RE = re.compile(r"https?://[^\s)\"'<>`]+")
 
 
 def _body() -> str:
     return README.read_text()
+
+
+def _all_absolute_urls(body: str) -> set[str]:
+    urls = set()
+    for raw in _URL_RE.findall(body):
+        urls.add(raw.rstrip(".,;"))
+    return urls
 
 
 def test_readme_has_one_minute_sections():
@@ -55,6 +68,18 @@ def test_readme_has_one_minute_sections():
     assert "mit" in body, "README must state the MIT licence"
     assert "bash scripts/setup_dev.sh" in body, "README must keep the T1 setup command"
     assert "pytest -q" in body, "README must keep the test command"
+    # Pinned by content, not just by a keyword (review M4).
+    assert body.startswith(
+        "# Eunoia\n\n**Eunoia is an external brain for autonomous pentesting AI agents:"
+    ), "README must open with the one-sentence pitch"
+    assert "Built for autonomous pentesting agents and the humans who run them." in body, (
+        "README must say who it is for"
+    )
+    assert "Example agent prompt:" in body, "README must have an example agent prompt"
+    assert 'curl "http://129.150.57.82:10004/v1/search?q=' in body, (
+        "README must have a CLI search example"
+    )
+    assert "| Ask for | How | Notes |" in body, "README must have the search table"
 
 
 def test_readme_states_scope_and_measured_numbers():
@@ -87,6 +112,29 @@ def test_readme_absolute_links_are_verified_live():
         )
 
 
+# Bare URLs anywhere in the README (code blocks included) must resolve
+# to a verified-live endpoint, a search query on the same API host, or
+# the one real canonical HackerOne link used as the search example.
+_ALLOWED_BARE_PATHS = {
+    ("github.com", "/rfypych/eunoia"),
+    ("129.150.57.82:10004", "/v1/status"),
+    ("129.150.57.82:10004", "/v1/search"),
+    ("129.150.57.82:10004", "/v1/writeups"),
+    ("129.150.57.82:10004", "/llms.txt"),
+    ("129.150.57.82:10004", "/api/v1/openapi.json"),
+    ("129.150.57.82:10005", "/mcp"),
+    ("hackerone.com", "/reports/3882740"),
+}
+
+
+def test_readme_bare_urls_are_verified_live():
+    for url in sorted(_all_absolute_urls(_body())):
+        parsed = urlparse(url)
+        assert (parsed.netloc, parsed.path) in _ALLOWED_BARE_PATHS, (
+            f"README contains an absolute URL that was not verified live: {url}"
+        )
+
+
 def test_readme_has_no_placeholders_and_no_live_website_claim():
     body = _body()
     lowered = body.lower()
@@ -94,6 +142,11 @@ def test_readme_has_no_placeholders_and_no_live_website_claim():
     assert "dmca@eunoia.example" not in lowered
     assert "example.com" not in lowered
     assert "todo" not in lowered
-    assert "website" not in lowered or "not yet live" in lowered, (
-        "the website/demo (T6) must not be claimed as live"
-    )
+    # Tightened (review M4): every paragraph mentioning the website
+    # must say it is not yet live, not just one occurrence somewhere.
+    for paragraph in body.split("\n\n"):
+        if "website" not in paragraph.lower():
+            continue
+        assert "not yet live" in paragraph.lower(), (
+            f"a paragraph mentions the website without saying it is not yet live: {paragraph[:120]!r}"
+        )
