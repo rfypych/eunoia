@@ -8,6 +8,13 @@ deployment still has to do is install those units and point
 `DATABASE_URL` at the deployment Postgres — nothing in this repo
 runs them on its own.
 
+Fresh database, in order: `bash scripts/setup_dev_db.sh` (creates
+the `eunoia` role + database; test DB equivalent is
+`scripts/setup_test_db.sh`), `PYTHONPATH=src .venv/bin/alembic
+upgrade head`, then `.venv/bin/python scripts/seed_sources.py`
+(seeds the `sources` table — the worker poller fails with
+"source 'hackerone' not found" without it).
+
 ## Schedules
 
 ### 1. Poll loop — every 15 minutes
