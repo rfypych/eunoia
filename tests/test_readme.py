@@ -36,6 +36,9 @@ README = _REPO / "README.md"
 # 6 read-only tools; https://github.com/rfypych/eunoia returned 200.
 # The API root serves the T6 website/demo page: GET / returned 200
 # HTML, verified live 2026-11-19 after deploy (eunoia-api restart).
+# T9 added two URLs, verified live 2026-11-19: the per-writeup skill
+# for the CSRF search example returned 200 markdown, and the SSRF
+# writeup used in the skills worked example is in live search results.
 VERIFIED_ABSOLUTE_URLS = {
     "https://github.com/rfypych/eunoia",
     "http://129.150.57.82:10004/",
@@ -44,6 +47,9 @@ VERIFIED_ABSOLUTE_URLS = {
     "http://129.150.57.82:10004/llms.txt",
     "http://129.150.57.82:10004/api/v1/openapi.json",
     "http://129.150.57.82:10005/mcp",
+    "https://hackerone.com/reports/366638",
+    "https://hackerone.com/reports/3882740",
+    "http://129.150.57.82:10004/v1/writeups/w_01a1f1a6533177e99904437453565607/skill.md",
 }
 
 _LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
@@ -128,6 +134,8 @@ _ALLOWED_BARE_PATHS = {
     ("129.150.57.82:10004", "/api/v1/openapi.json"),
     ("129.150.57.82:10005", "/mcp"),
     ("hackerone.com", "/reports/3882740"),
+    ("hackerone.com", "/reports/366638"),
+    ("129.150.57.82:10004", "/v1/writeups/w_01a1f1a6533177e99904437453565607/skill.md"),
 }
 
 

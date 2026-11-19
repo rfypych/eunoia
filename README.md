@@ -52,6 +52,36 @@ pipx install eunoia-agents
 
 That command does not work yet: the package is not on PyPI yet (checked 2026-11-19: the name `eunoia` is taken by another project, so the package is `eunoia-agents`). The first PyPI release is blocked on the branch being pushed to GitHub (T2) and on the package being published — until then, install from a checkout as above.
 
+### Installable skills
+
+After `pip install .`, install the skills into your agents:
+
+```bash
+eunoia skills install
+eunoia skills list
+```
+
+This writes the registry skill (`writeup-registry`) plus one skill per real vuln class (`ssrf-fundamentals`, `xss-fundamentals`, ...) into each detected agent's skills directory:
+
+| Agent | Skills directory |
+| --- | --- |
+| Claude Code | `~/.claude/skills/<name>/SKILL.md` |
+| Codex | `~/.agents/skills/<name>/SKILL.md` |
+| Cursor | `~/.cursor/skills/<name>/SKILL.md` |
+
+The registry skill ships with the package; per-class skills are fetched live from the hosted API at install time, so re-running the install refreshes them. `unclassified` is never installed: there is no technique to teach for a class that means "not yet classified". The install shows the plan, asks before writing, and backs up any skill it replaces.
+
+Skill-only vs MCP:
+
+| What | Needs the MCP server? | How it works |
+| --- | --- | --- |
+| Installed skills (`writeup-registry`, `*-fundamentals`) | No | File-based `SKILL.md`; the agent follows them by calling the REST API (`GET /v1/search`, `GET /v1/writeups/{id}/skill.md`). No MCP server, no local database. |
+| Per-writeup skill in a live session | No, but faster with MCP | `GET /v1/writeups/{id}/skill.md` over REST, or the `get_writeup_skill` MCP tool — same text, two transports. |
+
+Worked example, pre-test: an agent pentesting a Java/Spring app reads the `writeup-registry` skill, searches once per technology, and finds the CSRF writeup [All stored Slack and Teams credentials can be deleted via Management Console CSRF](https://hackerone.com/reports/3882740) (CWE-352, medium). It fetches that writeup's skill at http://129.150.57.82:10004/v1/writeups/w_01a1f1a6533177e99904437453565607/skill.md and builds the CSRF hypothesis from the pattern, not from a payload.
+
+Worked example, mid-test: stuck on a suspicious SSRF candidate, the agent re-queries with `mid_test=true` and finds [SSRF in Portainer app lead to access to Internal Docker API without Auth](https://hackerone.com/reports/366638) (CWE-918, critical, $500 verified). It reads the `ssrf-fundamentals` skill and that writeup's skill, then verifies the candidate in its own lab before treating it as a finding.
+
 ## Quick start
 
 ### For an agent: connect over MCP
@@ -96,7 +126,8 @@ Anonymous callers get keyword mode only, limit up to 10 (default 5). Semantic an
 | A vulnerability class | `search_writeups(vuln_class="IDOR")` | Classes include IDOR, XSS, SQLi, RCE, Path Traversal, XXE |
 | A weakness | `search_writeups(cwe="CWE-352")` | CWE ids, normalised from the source |
 | A single writeup | `get_writeup(id="...")` | Full metadata plus the canonical source link |
-| A class skill | `get_writeup_skill(id="...")` | A `SKILL.md` generated from that writeup |
+| A writeup skill | `get_writeup_skill(id="...")` or `GET /v1/writeups/{id}/skill.md` | A `SKILL.md` generated from that writeup |
+| A class skill | `GET /v1/vuln-classes/{class}/skill.md` | Aggregate of the best verified writeups in that class |
 | What is fresh | `check_freshness()` | Last poll, lag, and source health |
 
 Current scope, measured 2026-11-19: **507 real HackerOne writeups, all disclosed reports (not Java/Spring-only)**, polled every 15 minutes. 45 of the 507 writeups are still unclassified (8.9%).

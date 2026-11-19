@@ -44,6 +44,9 @@ Homepage = "https://github.com/rfypych/eunoia"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+eunoia = ["skills_data/*/*.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

@@ -62,7 +62,7 @@ from eunoia.safety.serving import (
     servable_filter,
 )
 from eunoia.search import SearchResult, search
-from eunoia.skills import get_skill_text
+from eunoia.skills import get_skill_text, get_vuln_class_skill
 
 __all__ = ["ApiError", "create_app"]
 
@@ -1132,6 +1132,22 @@ def create_app(
             {"vuln_class": name, "writeup_count": int(count)}
             for name, count in rows
         ]}
+
+    @app.get("/v1/vuln-classes/{raw_class}/skill.md")
+    def vuln_class_skill(raw_class: str, session: Session = Depends(_session)):
+        """Per-class SKILL.md (T9: ``get_vuln_class_skill``).
+
+        The aggregate of the best verified writeups in the class.
+        An empty class is 404, never an empty skill. A secret-scan
+        refusal is a distinct 503 SECRET_FOUND, never 404.
+        """
+        try:
+            skill = get_vuln_class_skill(raw_class, session=session)
+        except SecretFoundError as exc:
+            raise ApiError(503, "SECRET_FOUND", str(exc))
+        except ValueError as exc:
+            raise ApiError(404, "NOT_FOUND", str(exc))
+        return PlainTextResponse(skill, media_type="text/markdown")
 
     @app.get("/v1/status")
     def get_status(session: Session = Depends(_session)):

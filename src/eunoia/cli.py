@@ -16,6 +16,21 @@ Subcommands:
   hosted MCP server (``tools/list`` plus a real ``search_writeups`` call).
 - ``eunoia update`` — check PyPI for a newer ``eunoia-agents`` release
   and upgrade with the installer that installed it.
+- ``eunoia skills install`` — install the registry skill plus one
+  per-class skill per real vuln class into each detected agent's
+  skills directory. The skills are file-based and work over the REST
+  API alone: no MCP server and no local database are needed to use
+  them. MCP is only an alternative transport for the per-writeup
+  skill, never a requirement.
+- ``eunoia skills list`` — list installed Eunoia skills per agent.
+
+Skill directories follow the vendors' docs checked 2026-11-19:
+
+- Claude Code: ``~/.claude/skills/<name>/SKILL.md`` (personal).
+- Codex: ``~/.agents/skills/<name>/SKILL.md`` (personal; the older
+  ``~/.codex/skills`` is still read but no longer documented).
+- Cursor: ``~/.cursor/skills/<name>/SKILL.md`` (personal; Cursor also
+  reads ``.claude/skills`` and ``.agents/skills``).
 
 This module uses only the standard library on purpose: importing it must
 never pull in the server's heavy dependencies (SQLAlchemy, torch), so a
@@ -41,10 +56,11 @@ import subprocess
 import sys
 import tomllib
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from importlib import metadata
+from importlib import metadata, resources
 from pathlib import Path
 from typing import Callable
 
@@ -71,12 +87,18 @@ __all__ = [
     "HOSTED_MCP_URL",
     "PACKAGE_NAME",
     "Change",
+    "SkillFile",
+    "SkillInstall",
     "apply_changes",
+    "apply_skill_installs",
     "check_update",
     "check_update_status",
     "detect_clients",
     "doctor",
+    "fetch_skills",
+    "list_installed_skills",
     "main",
+    "plan_skill_installs",
     "planned_changes",
 ]
 
@@ -417,6 +439,225 @@ def doctor(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Skills: installable SKILL.md files (T9)
+# ---------------------------------------------------------------------------
+
+# Personal skills directory per client, relative to home. Paths checked
+# against vendor docs 2026-11-19 (see module docstring).
+SKILL_DIR_REL = {
+    "claude-code": ".claude/skills",
+    "codex": ".agents/skills",
+    "cursor": ".cursor/skills",
+}
+
+_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+_BAD_LINK_RES = ("javascript:", "data:text/html", "data:application")
+
+
+@dataclass(frozen=True)
+class SkillFile:
+    """One installable skill: its directory name and SKILL.md text."""
+
+    name: str
+    text: str
+
+
+@dataclass
+class SkillInstall:
+    """One SKILL.md file ``skills install`` will create or update."""
+
+    path: Path
+    skill_name: str
+    client_name: str
+    action: str  # "create" | "update"
+    before: str | None
+    text: str
+
+
+def _packaged_registry_skill() -> str:
+    """The registry skill shipped as package data (no network needed)."""
+    return (
+        resources.files("eunoia.skills_data") / "eunoia-registry" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+
+def _parse_skill_frontmatter(text: str) -> tuple[str, str]:
+    """Return ``(name, description)`` from a SKILL.md, or raise ValueError."""
+    lines = text.splitlines()
+    if len(lines) < 3 or lines[0].strip() != "---":
+        raise ValueError("skill has no frontmatter: expected '---' first line")
+    try:
+        end = lines.index("---", 1)
+    except ValueError:
+        raise ValueError("skill frontmatter is not closed") from None
+    fields: dict[str, str] = {}
+    for line in lines[1:end]:
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        fields[key.strip()] = value.strip()
+    name = fields.get("name", "")
+    description = fields.get("description", "")
+    if not _NAME_RE.match(name):
+        raise ValueError(f"skill has an invalid name: {name!r}")
+    if not description or len(description) > 1024:
+        raise ValueError(
+            "skill has a missing or over-long description "
+            "(must be 1-1024 characters)"
+        )
+    return name, description
+
+
+def _validate_skill_text(text: str) -> str:
+    """Validate a fetched SKILL.md; return its skill name.
+
+    A skill that reaches an agent's disk must be safe to follow: valid
+    frontmatter and no non-http(s) link (a ``javascript:`` or ``data:``
+    link in a skill would run when the agent follows it — the T6
+    review's M1, applied here at install time).
+    """
+    name, _description = _parse_skill_frontmatter(text)
+    lowered = text.lower()
+    for bad in _BAD_LINK_RES:
+        if bad in lowered:
+            raise ValueError(
+                f"skill {name!r} contains a non-http(s) link ({bad})"
+            )
+    return name
+
+
+def _http_text(opener, url: str, timeout: int = 10) -> str:
+    with opener(urllib.request.Request(url), timeout=timeout) as resp:
+        return resp.read().decode("utf-8")
+
+
+def fetch_skills(
+    api_url: str = HOSTED_API_URL,
+    opener=None,
+    classes: list[str] | None = None,
+) -> list[SkillFile]:
+    """Fetch the installable skill set: registry skill + one per class.
+
+    The registry skill is packaged (no network). Per-class skills are
+    fetched live from ``GET /v1/vuln-classes/{class}/skill.md``, so an
+    install always gets the current aggregate, never a stale copy.
+    ``unclassified`` is never installed: there is no technique to teach
+    for a class that means "not yet classified".
+    """
+    opener = opener or _default_opener
+    skills = [SkillFile("writeup-registry", _packaged_registry_skill())]
+    if classes is None:
+        data = _http_json(opener, api_url.rstrip("/") + "/v1/vuln-classes")
+        classes = [item["vuln_class"] for item in data.get("items", [])]
+    for vuln_class in classes:
+        if vuln_class.strip().lower() == "unclassified":
+            continue
+        url = (
+            api_url.rstrip("/")
+            + "/v1/vuln-classes/"
+            + urllib.parse.quote(vuln_class, safe="")
+            + "/skill.md"
+        )
+        text = _http_text(opener, url)
+        skills.append(SkillFile(_validate_skill_text(text), text))
+    return skills
+
+
+def plan_skill_installs(
+    home: Path,
+    skills: list[SkillFile],
+    clients: list[Client] | None = None,
+) -> list[SkillInstall]:
+    """The SKILL.md writes ``skills install`` would make, in client order.
+
+    Only detected agents get skills. When no agent is detected at all,
+    fall back to the Claude Code layout (``~/.claude/skills``), which
+    Cursor also reads, plus the Codex layout (``~/.agents/skills``),
+    and say so — installing nothing would leave the user with no
+    usable skill at all.
+    """
+    if clients is None:
+        clients = detect_clients(home)
+    if not clients:
+        clients = [c for c in CLIENTS if c.name in ("claude-code", "codex")]
+    installs: list[SkillInstall] = []
+    for client in clients:
+        base = home / SKILL_DIR_REL[client.name]
+        for skill in skills:
+            path = base / skill.name / "SKILL.md"
+            before = path.read_text() if path.exists() else None
+            if before == skill.text:
+                continue
+            installs.append(
+                SkillInstall(
+                    path=path,
+                    skill_name=skill.name,
+                    client_name=client.name,
+                    action="create" if before is None else "update",
+                    before=before,
+                    text=skill.text,
+                )
+            )
+    return installs
+
+
+def apply_skill_installs(
+    installs: list[SkillInstall],
+    *,
+    yes: bool = False,
+    input_fn: Callable[[str], str] | None = None,
+) -> list[Path]:
+    """Write ``installs`` after approval; return the files written.
+
+    ``input_fn`` defaults to :func:`input` resolved at call time, so
+    callers (and tests) can replace ``builtins.input``.
+    """
+    if not installs:
+        return []
+    if input_fn is None:
+        input_fn = input
+    for install in installs:
+        print(f"  {install.client_name}: {install.action} {install.path}")
+    if not yes:
+        answer = input_fn("Install these skills? [y/N] ").strip().lower()
+        if answer not in ("y", "yes"):
+            print("Aborted: no changes applied.")
+            return []
+    written: list[Path] = []
+    for install in installs:
+        if install.action == "update" and install.before is not None:
+            backup = _backup_path(install.path)
+            backup.write_text(install.before)
+            print(f"  backup: {backup}")
+        install.path.parent.mkdir(parents=True, exist_ok=True)
+        install.path.write_text(install.text)
+        written.append(install.path)
+    return written
+
+
+def list_installed_skills(
+    home: Path,
+    clients: list[Client] | None = None,
+) -> dict[str, list[str]]:
+    """Installed Eunoia skills per detected client (empty when none)."""
+    if clients is None:
+        clients = detect_clients(home)
+    found: dict[str, list[str]] = {}
+    for client in clients:
+        base = home / SKILL_DIR_REL[client.name]
+        if not base.exists():
+            continue
+        names = sorted(
+            p.name
+            for p in base.iterdir()
+            if p.is_dir() and (p / "SKILL.md").is_file()
+        )
+        if names:
+            found[client.name] = names
+    return found
+
+
 def _pypi_fetcher(url: str, timeout: int = 10) -> dict:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
@@ -557,6 +798,30 @@ def main(argv: list[str] | None = None) -> int:
     doctor_p.add_argument("--api-url", default=HOSTED_API_URL)
     doctor_p.add_argument("--mcp-url", default=HOSTED_MCP_URL)
 
+    skills_p = sub.add_parser("skills", help="installable SKILL.md files")
+    skills_sub = skills_p.add_subparsers(dest="skills_command")
+    install_p = skills_sub.add_parser(
+        "install", help="install Eunoia skills into detected agents"
+    )
+    install_p.add_argument("--home", type=Path, default=Path.home())
+    install_p.add_argument("--api-url", default=HOSTED_API_URL)
+    install_p.add_argument(
+        "--agents",
+        default=None,
+        help="comma-separated clients to install for: claude-code,codex,cursor",
+    )
+    install_p.add_argument(
+        "--class",
+        dest="classes",
+        action="append",
+        default=None,
+        help="install only this vuln class (repeatable)",
+    )
+    install_p.add_argument("--yes", action="store_true", help="apply without asking")
+    install_p.add_argument("--dry-run", action="store_true", help="show the plan only")
+    list_p = skills_sub.add_parser("list", help="list installed Eunoia skills")
+    list_p.add_argument("--home", type=Path, default=Path.home())
+
     sub.add_parser("update", help="upgrade eunoia-agents from PyPI")
 
     try:
@@ -575,6 +840,55 @@ def main(argv: list[str] | None = None) -> int:
         report = doctor(args.api_url, args.mcp_url)
         _print_doctor(report, args.api_url, args.mcp_url)
         return 0 if report["ok"] else 1
+
+    if args.command == "skills":
+        if args.skills_command == "list":
+            found = list_installed_skills(args.home)
+            if not found:
+                print("No Eunoia skills installed.")
+                return 0
+            for client_name, names in found.items():
+                print(f"{client_name}:")
+                for name in names:
+                    print(f"  {name}")
+            return 0
+        if args.skills_command == "install":
+            clients = None
+            if args.agents:
+                wanted = {a.strip() for a in args.agents.split(",") if a.strip()}
+                unknown = wanted - {c.name for c in CLIENTS}
+                if unknown:
+                    print(f"Unknown agent(s): {', '.join(sorted(unknown))}")
+                    return 2
+                clients = [c for c in CLIENTS if c.name in wanted]
+            try:
+                skills = fetch_skills(args.api_url, classes=args.classes)
+            except Exception as exc:
+                print(f"Could not fetch skills from {args.api_url}: {exc}")
+                return 1
+            installs = plan_skill_installs(args.home, skills, clients=clients)
+            if not installs:
+                print("Already installed: every skill is up to date.")
+                return 0
+            targets = sorted({i.client_name for i in installs})
+            print("Installing skills for: " + ", ".join(targets))
+            print("Planned skill installs:")
+            if args.dry_run:
+                for install in installs:
+                    print(f"  {install.client_name}: {install.action} {install.path}")
+                print("Dry run: no changes applied.")
+                return 0
+            written = apply_skill_installs(installs, yes=args.yes)
+            if not written:
+                return 1
+            print(
+                "Done. The skills work over the REST API alone — no MCP "
+                "server or local database needed. Restart your agent "
+                "if it was already running."
+            )
+            return 0
+        skills_p.print_help()
+        return 0
 
     if args.command == "update":
         installed = _installed_version()

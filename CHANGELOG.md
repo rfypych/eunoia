@@ -70,6 +70,20 @@ Versioning.
   `scripts/build_real_queries.py` and validated before measuring;
   expected ids are database UUIDs, so the set is rebuilt on the
   database being measured.
+- Installable skills (T9): `eunoia skills install` writes the
+  registry skill (`writeup-registry`, shipped as package data) plus
+  one per-class skill per real vuln class into each detected agent's
+  skills directory (Claude Code `~/.claude/skills`, Codex
+  `~/.agents/skills`, Cursor `~/.cursor/skills`); per-class skills
+  are fetched live from the new `GET /v1/vuln-classes/{class}/skill.md`
+  endpoint, `unclassified` is never installed, and the install shows
+  the plan, asks before writing, and backs up replaced skills.
+  Installed skills work over the REST API alone — no MCP server and
+  no local database are needed to use them; the per-writeup skill is
+  available over REST and over MCP as two transports for the same
+  text. A verified pre-test (CSRF, report 3882740) and mid-test (SSRF,
+  report 366638) walkthrough is in the README, both verified live
+  2026-11-19.
 
 ### Pending operator decisions
 

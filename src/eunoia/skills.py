@@ -94,6 +94,70 @@ _CLASS_PATTERNS = {
         "embedded into a template. The pattern to study is which "
         "template constructs are reachable from input."
     ),
+    "csrf": (
+        "Cross-Site Request Forgery happens when a site trusts a "
+        "request only because the browser attached the victim's "
+        "session cookie. The pattern to study is which state-changing "
+        "requests lack an unguessable token or origin check, and "
+        "whether the cookie is SameSite or the request is a simple "
+        "cross-site form post."
+    ),
+    "info disclosure": (
+        "Information disclosure happens when a response or error "
+        "reveals data the caller should not see. The pattern to study "
+        "is which fields, files, or error details leak, and which "
+        "access check should have filtered them."
+    ),
+    "dos": (
+        "Denial of service happens when one request can consume a "
+        "disproportionate share of server resources. The pattern to "
+        "study is which input controls the cost of the work and which "
+        "limit or timeout is missing."
+    ),
+    "memory safety": (
+        "A memory-safety flaw happens when code reads or writes "
+        "memory outside its intended bounds. The pattern to study is "
+        "which length, index, or lifetime assumption the input can "
+        "break, and which check should have bounded it."
+    ),
+    "privilege escalation": (
+        "Privilege escalation happens when a lower-privileged caller "
+        "reaches an operation reserved for a higher role. The pattern "
+        "to study is where the role check sits, whether it runs on "
+        "every path to the operation, and what happens when it is "
+        "missing."
+    ),
+    "open redirect": (
+        "Open redirect happens when a site redirects the browser to a "
+        "URL supplied by the caller without checking it. The pattern "
+        "to study is how the destination is built and which "
+        "allowlist should constrain it."
+    ),
+    "injection": (
+        "Injection happens when user-controlled input is interpreted "
+        "as code or commands by another layer. The pattern to study "
+        "is where input crosses into the interpreter and which "
+        "escaping or parameterization is missing."
+    ),
+    "clickjacking": (
+        "Clickjacking happens when a page is framed by an attacker "
+        "page so the victim's click lands on a hidden control. The "
+        "pattern to study is whether the page can be framed and "
+        "which framing protection is missing."
+    ),
+    "unrestricted file upload": (
+        "Unrestricted file upload happens when an uploaded file is "
+        "stored or served without checking its type or content. The "
+        "pattern to study is which checks run on the upload, where "
+        "the file lands, and whether it can be executed or served "
+        "as active content."
+    ),
+    "request smuggling": (
+        "HTTP request smuggling happens when a front-end and a "
+        "back-end disagree about where one request ends and the next "
+        "begins. The pattern to study is how length and transfer "
+        "headers are parsed at each layer."
+    ),
     "auth bypass": (
         "Authentication bypass happens when a check meant to prove "
         "identity can be skipped or confused. The pattern to study is the "
@@ -433,7 +497,16 @@ def get_vuln_class_skill(vuln_class: str,
         rows = deduped
         if not rows:
             raise ValueError(f"no writeups in vuln class: {vuln_class!r}")
-        return _render_class_skill(vuln_class, rows)
+        text = _render_class_skill(vuln_class, rows)
+        # Defense in depth, like get_skill_text: a secret that slips
+        # into a title must never be served as a skill.
+        findings = scan_secrets(text)
+        if findings:
+            raise SecretFoundError(
+                f"skill for vuln class {vuln_class!r} contains a "
+                f"possible secret ({findings[0].pattern}); refusing to serve"
+            )
+        return text
     finally:
         if own_session:
             session.close()
