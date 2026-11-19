@@ -64,6 +64,7 @@ __all__ = [
     "PollResult",
     "RateLimitedError",
     "handle_discovery_job",
+    "normalize_cwe",
     "parse_hacktivity_item",
     "poll_hackerone",
 ]
@@ -75,6 +76,76 @@ MAX_PAGES_PER_RUN = 10
 MAX_429_PER_DAY = 3
 
 _SEVERITIES = {"none", "low", "medium", "high", "critical"}
+
+# Live-data correction (deploy 2026-11-19): the Hacktivity API's `cwe`
+# attribute is a weakness NAME ("Cross-Site Request Forgery (CSRF)",
+# "Path Traversal", "Cross-site Scripting (XSS) - Reflected"), NOT a CWE
+# id. The MVP fixtures assumed "CWE-918", so the first production poll
+# crashed every discovery job with StringDataRightTruncation
+# (writeup_vulns.cwe_id is VARCHAR(16)). Normalize at parse time so
+# every downstream consumer sees a real CWE id or None. Names with no
+# confident single-CWE mapping are dropped (None), never stored
+# verbatim: cwe_id semantics are CWE ids, and an unmapped name
+# classifies as "unclassified" + needs_review downstream.
+_CWE_RE = re.compile(r"CWE-(\d+)", re.IGNORECASE)
+# Keys are lowercase base names; a " - Subtype" suffix is stripped
+# before lookup ("Improper Access Control - Generic" -> base name).
+_WEAKNESS_NAME_TO_CWE = {
+    "cross-site request forgery (csrf)": "CWE-352",
+    "cross-site request forgery": "CWE-352",
+    "cross-site scripting (xss)": "CWE-79",
+    "cross-site scripting": "CWE-79",
+    "server-side request forgery (ssrf)": "CWE-918",
+    "server-side request forgery": "CWE-918",
+    "sql injection": "CWE-89",
+    "path traversal": "CWE-22",
+    "improper access control": "CWE-284",
+    "uncontrolled resource consumption": "CWE-400",
+    "denial of service": "CWE-400",
+    "information disclosure": "CWE-200",
+    "sensitive data exposure": "CWE-200",
+    "insecure direct object reference (idor)": "CWE-639",
+    "insecure direct object reference": "CWE-639",
+    "improper certificate validation": "CWE-295",
+    "out-of-bounds read": "CWE-125",
+    "heap overflow": "CWE-122",
+    "missing critical step in authentication": "CWE-304",
+    "improper authentication": "CWE-287",
+    "missing authorization": "CWE-862",
+    "privilege escalation": "CWE-269",
+    "use after free": "CWE-416",
+    "code injection": "CWE-94",
+    "server-side template injection": "CWE-94",
+    "server-side template injection (ssti)": "CWE-94",
+    "xml entity expansion": "CWE-611",
+    "xml external entity (xxe)": "CWE-611",
+    "xml external entity": "CWE-611",
+    "os command injection": "CWE-78",
+    "deserialization of untrusted data": "CWE-502",
+    "insecure deserialization": "CWE-502",
+    "open redirect": "CWE-601",
+    "race condition": "CWE-362",
+}
+
+
+def normalize_cwe(value: str | None) -> str | None:
+    """Map a Hacktivity `cwe` attribute to a CWE id (``CWE-<digits>``).
+
+    Passes a real CWE id through (case-insensitive), maps a known
+    weakness name via _WEAKNESS_NAME_TO_CWE, and returns None for
+    anything else — never a verbatim name, which does not fit the
+    VARCHAR(16) cwe_id column or the CWE-keyed classifier.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    match = _CWE_RE.search(value)
+    if match:
+        return f"CWE-{match.group(1)}"
+    key = value.strip().lower()
+    if key in _WEAKNESS_NAME_TO_CWE:
+        return _WEAKNESS_NAME_TO_CWE[key]
+    base = key.split(" - ", 1)[0].strip()
+    return _WEAKNESS_NAME_TO_CWE.get(base)
 # Strongest dedup decision first; used to pick one outcome when several
 # existing rows match a candidate on different layers.
 _DECISION_RANK = {
@@ -235,6 +306,13 @@ def parse_hacktivity_item(item: dict) -> dict | None:
     team_attrs = (team.get("data") or {}).get("attributes") or {}
     reporter = (item.get("relationships") or {}).get("reporter") or {}
     reporter_attrs = (reporter.get("data") or {}).get("attributes") or {}
+    # Live-data correction (deploy 2026-11-19): severity_rating is
+    # capitalized ("Medium", "Critical") and `cwe` is a weakness name.
+    # The severity enum and the VARCHAR(16) cwe_id column both need
+    # the normalized forms; unnormalized values crash the insert
+    # (enum cast / StringDataRightTruncation) or silently drop.
+    raw_severity = attrs.get("severity_rating")
+    severity = raw_severity.lower() if isinstance(raw_severity, str) else None
     return {
         "canonical_url": canonical_url,
         "external_id": f"hackerone:{item.get('id')}",
@@ -243,9 +321,9 @@ def parse_hacktivity_item(item: dict) -> dict | None:
         "text": normalize_text(f"{title} {vuln_info}"),
         "disclosed_at": attrs.get("disclosed_at"),
         "latest_disclosable_activity_at": attrs.get("latest_disclosable_activity_at"),
-        "cwe": attrs.get("cwe"),
+        "cwe": normalize_cwe(attrs.get("cwe")),
         "cve_ids": attrs.get("cve_ids") or [],
-        "severity": attrs.get("severity_rating"),
+        "severity": severity,
         "bounty_amount": bounty,
         "bounty_currency": "USD" if bounty is not None else None,
         # Platform API is the source of the number, so a positive
