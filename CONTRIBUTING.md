@@ -24,7 +24,7 @@ never production.
 
 - Work on a branch from `main`, one task per branch, one commit
   per task where practical.
-- Test-driven: add or update tests with the change, and keep the
+- Add or update tests with the change, and keep the
   full suite green (`pytest -q`).
 - Update the docs with the code: if behaviour, an endpoint, or a
   config changes, the matching doc changes in the same commit.

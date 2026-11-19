@@ -809,3 +809,43 @@ def test_t7_apply_cached_nvd_leaves_rows_without_nvd_data(
     vuln = session.query(WriteupVuln).one()
     assert vuln.vuln_class == "unclassified"
     assert vuln.cvss_score is None
+
+
+# --- T7 fix: _due_refresh_jobs must count NULL next_attempt_at as due ---
+def _load_backfill_script():
+    """Load scripts/backfill_hackerone.py as a module (it lives in
+    scripts/, not in the package)."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent.parent / "scripts" / "backfill_hackerone.py"
+    spec = importlib.util.spec_from_file_location("backfill_hackerone", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_t7_due_refresh_jobs_counts_null_next_attempt_as_due(session):
+    """Regression: the box backfill queued 89 fresh nvd_refresh jobs
+    and the drain reported '0 due' because a plain '<= now' missed
+    every job whose next_attempt_at was NULL (never attempted). A
+    NULL next attempt means 'due now', same as the claim condition
+    in the jobs module. A job backed off into the future is not due,
+    and 'pending' alone is not the drain's stop condition."""
+    backfill = _load_backfill_script()
+    now = datetime.now(timezone.utc)
+    jobs = [
+        Job(kind="nvd_refresh", source_id=None,
+            idempotency_key="nvd:NULL", payload={"cve_id": "CVE-2026-00001"},
+            status="pending", next_attempt_at=None),
+        Job(kind="nvd_refresh", source_id=None,
+            idempotency_key="nvd:PAST", payload={"cve_id": "CVE-2026-00002"},
+            status="pending", next_attempt_at=now - timedelta(minutes=5)),
+        Job(kind="nvd_refresh", source_id=None,
+            idempotency_key="nvd:FUTURE", payload={"cve_id": "CVE-2026-00003"},
+            status="pending", next_attempt_at=now + timedelta(hours=1)),
+    ]
+    session.add_all(jobs)
+    session.flush()
+    assert backfill._pending_refresh_jobs(session) == 3
+    assert backfill._due_refresh_jobs(session) == 2

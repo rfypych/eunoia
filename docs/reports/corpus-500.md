@@ -85,7 +85,11 @@ dari judul") sengaja diganti di sini, dengan alasan yang terukur:
 menyebut tekniknya ("SSRF", "bypass", "leak", "overflow",
 "ReDoS") **adalah** laporan itu menyebut kelasnya sendiri.
 Setiap frasa diukur terhadap korpus 506 baris; set ini
-mengklasifikasi 96 dari 145 baris NULL-CWE. Aturan lama diganti karena datanya menuntut begitu (di bawah ini); tes yang mengunci aturan lama diperbarui mengikuti aturan baru.
+mengklasifikasi 96 dari 145 baris NULL-CWE. Presisi proxy-nya
+terukur: diterapkan pada baris yang punya kelas turunan CWE
+(sebagai pembanding), frasa ini cocok 169 dari 228 kali (74,1%)
+— jadi sekitar seperempat klasifikasi fallback salah kelas, dan
+angka itu harus dibaca bersama recall di bawah. Aturan lama diganti karena datanya menuntut begitu (di bawah ini); tes yang mengunci aturan lama diperbarui mengikuti aturan baru.
 
 Frasa yang ditambahkan (urutan = pertama yang cocok menang,
 teknik paling spesifik dulu): akronim teknik telanjang (ssrf,
@@ -128,8 +132,11 @@ foto, "Uber Test Report"), logika bisnis tanpa kata kunci,
 dan 3 CVE-2026 yang NVD belum terbitkan saat pengukuran
 (CVE-2026-111950, CVE-2026-111482, CVE-2026-111481) — ketiganya
 akan ter-resolve sendiri lewat retry `nvd_refresh` worker
-begitu NVD menerbitkannya. Tidak ada baris yang diklasifikasi
-dengan tebakan: yang tidak bernama tetap unclassified.
+begitu NVD menerbitkannya. Fallback ini bukan tanpa dasar — frasanya adalah nama teknik
+eksplisit di judul — tapi juga bukan tanpa salah: presisi
+proxy-nya 74,1% (di atas), jadi sekitar seperempat baris yang
+diklasifikasi lewat fallback bisa salah kelas. Yang tidak
+bernama tetap unclassified.
 
 ## Recall: 0,9524 lokal, 0,9048 produksi, miss mid-test
 

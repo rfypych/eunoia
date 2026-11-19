@@ -609,9 +609,9 @@ stack in, attack plan out.</strong></p>
 </p>
 <div id="results"></div>
 <h2>Scope and install</h2>
-<p>Corpus: real public HackerOne writeups, Java/Spring only for now.
-Growing the corpus is planned work; the live count above comes from
-the API status endpoint.</p>
+<p>Corpus: real public HackerOne writeups, all disclosed reports
+(not Java/Spring-only). Growing the corpus is planned work; the
+live count above comes from the API status endpoint.</p>
 <p>Install: from a checkout, <code>pip install .</code>, then
 <code>eunoia setup</code>. The <code>eunoia-agents</code> package is
 not on PyPI yet.</p>

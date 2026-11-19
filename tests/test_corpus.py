@@ -12,8 +12,10 @@ measurement is trusted.
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
+from pathlib import Path
 
 import pytest
 from sqlalchemy import text
@@ -129,3 +131,31 @@ def test_t7_measure_real_recall_reports_split_numbers(
     assert 0.0 <= report.recall_at_10 <= 1.0
     assert report.p50_ms >= 0.0 and report.p95_ms >= report.p50_ms
     assert len(report.per_query) == 2
+
+
+def test_t7_acceptance_numbers_pinned_without_real_corpus():
+    """Acceptance numbers (507 writeups, 45 unclassified 8.9%,
+    recall@10 0.9048 production) were measured on the real 500-row
+    corpus, which CI does not have: recomputing them here would need
+    500 real rows plus embeddings, so no test here can re-derive
+    them from data. What this pins instead: the recorded numbers
+    must be arithmetically consistent (45/507 = 8.9%, 19/21 =
+    0.9048) and present in the report, and the query file must carry
+    the 21 queries (14 pre-test, 7 mid-test) they were measured on.
+    If the corpus is re-measured, update the report and this test
+    together."""
+    repo = Path(__file__).resolve().parent.parent
+    report = (repo / "docs" / "reports" / "corpus-500.md").read_text(
+        encoding="utf-8")
+    queries = json.loads(
+        (repo / "docs" / "golden" / "real-queries-500.json").read_text(
+            encoding="utf-8"))
+    assert len(queries) == 21
+    assert sum(q["mode"] == "pre_test" for q in queries) == 14
+    assert sum(q["mode"] == "mid_test" for q in queries) == 7
+    assert round(100.0 * 45 / 507, 1) == 8.9
+    assert round(100.0 * 42 / 506, 1) == 8.3
+    assert round(19 / 21, 4) == 0.9048
+    assert round(20 / 21, 4) == 0.9524
+    for needle in ("45 (8,9%)", "0,9048", "507", "0,9524"):
+        assert needle in report, f"report must record {needle}"

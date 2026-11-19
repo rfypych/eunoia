@@ -204,7 +204,12 @@ def test_root_is_honest_about_scope_and_install(client):
     body = client.get("/").text
     lowered = body.lower()
     assert "hackerone" in lowered
-    assert "java/spring" in lowered
+    assert "java/spring only" not in lowered, (
+        "page must not claim the corpus is Java/Spring-only: "
+        "measured 19 Nov 2026, 0 of the 100 newest disclosed reports "
+        "mention Java/Spring"
+    )
+    assert "not java/spring-only" in lowered
     assert "not on pypi yet" in lowered or "not published on pypi" in lowered, (
         "page must say the PyPI package is not published yet"
     )

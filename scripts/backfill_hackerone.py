@@ -132,9 +132,11 @@ def _drain_refresh_jobs(session: Session, client, limiter,
     NVD without an API key allows 5 requests / 30 s, and a failed
     refresh backs off 1 minute before it is due again — so one pass
     can only resolve a handful. Passes are 65 s apart (bucket refill
-    + back-off) and stop early when no refresh job is pending. The
-    poll function is a no-op: this drains only, it never polls
-    HackerOne. Returns the number of passes run.
+    + back-off) and stop early when no refresh job is due (a job
+    backed off into the future is pending but not due, so 'pending'
+    alone never drains to zero). The poll function is a no-op: this
+    drains only, it never polls HackerOne. Returns the number of
+    passes run.
     """
     import time
 

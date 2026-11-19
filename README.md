@@ -99,7 +99,7 @@ Anonymous callers get keyword mode only, limit up to 10 (default 5). Semantic an
 | A class skill | `get_writeup_skill(id="...")` | A `SKILL.md` generated from that writeup |
 | What is fresh | `check_freshness()` | Last poll, lag, and source health |
 
-Current scope, measured 2026-11-19: **50 real HackerOne writeups, Java/Spring only**, polled every 15 minutes. The corpus is small and 18 of the 50 writeups are still unclassified (36%); growing it to 500 with under 10% unclassified is planned work.
+Current scope, measured 2026-11-19: **507 real HackerOne writeups, all disclosed reports (not Java/Spring-only)**, polled every 15 minutes. 45 of the 507 writeups are still unclassified (8.9%).
 
 ## What Eunoia does not do
 
@@ -145,7 +145,7 @@ Tests run against a dedicated `eunoia_test` database, never the dev database. `s
 - [Takedown policy](docs/policies/takedown.md) — how a disclosure is removed on request.
 - [DoD checklist](docs/runbooks/dod-checklist.md) — the Definition of Done, with measured evidence.
 - [Changelog](CHANGELOG.md) — 0.1.0 (2026-11-19) and unreleased changes.
-- [Contributing](CONTRIBUTING.md) — setup, TDD, and the no-payload rule.
+- [Contributing](CONTRIBUTING.md) — setup and the no-payload rule.
 - [Security](SECURITY.md) — how to report a vulnerability.
 - Source: [github.com/rfypych/eunoia](https://github.com/rfypych/eunoia)
 

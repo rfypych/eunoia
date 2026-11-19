@@ -8,18 +8,6 @@ containment for mid-test evidence). Expected sets are kept small
 (<=6 rows) so recall@10 can actually reach 1.0 — a class with 100 rows
 cannot be a recall query, so those are never emitted.
 
-"""
-
-"""Build docs/golden/real-queries-500.json from the corpus.
-
-Data-driven and deterministic: every expected id is checked to exist,
-be active, and be servable (validate_real_queries), and every query's
-expected set is computed with the SAME rules search() uses (SQL
-equality for vuln_class/cwe/cve; _stack_match for tech; phrase
-containment for mid-test evidence). Expected sets are kept small
-(<=6 rows) so recall@10 can actually reach 1.0 — a class with 100
-rows cannot be a recall query, so those are never emitted.
-
 Expected ids are database UUIDs, so a query set built on one
 database does not transfer to another: rebuild it on the database
 you measure (same builder, same method).
