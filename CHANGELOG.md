@@ -84,6 +84,15 @@ Versioning.
   text. A verified pre-test (CSRF, report 3882740) and mid-test (SSRF,
   report 366638) walkthrough is in the README, both verified live
   2026-11-19.
+- Three showcases with evidence (`docs/showcases.md`, linked from
+  the README): pre-test CSRF planning, mid-test blind SQL injection
+  (same candidate under both rankings), and install/doctor
+  end-to-end from a fresh virtual environment (7.1 s install,
+  1.9 s doctor, 507 writeups active, 6 MCP tools). Every number is
+  as measured live on 2026-11-19 against the 507-writeup corpus,
+  with the exact request to re-run it and the limitations stated —
+  including mid-test recall@10 of 0.714 and the two 2022
+  low-severity misses.
 
 ### Pending operator decisions
 

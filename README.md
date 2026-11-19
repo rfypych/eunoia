@@ -146,7 +146,7 @@ Measured read-only on the live production corpus of 507 writeups, 21 queries, 20
 
 - **Recall@10: 0.9048** overall (pre-test 1.00, mid-test 0.714). The 2 misses were both mid-test, both 2022 reports with low severity and no CVSS.
 - **Latency: p50 46.89 ms, p95 78.45 ms.**
-- **Cold-cache install (2026-11-19):** `pip install .` in a fresh virtual environment took 4 s, venv 16 MB (base CLI only, stdlib-only; it was 24 min / 5.8 GB when torch was a base dependency). `pip install ".[dev,server]"` cold took 65 s, venv 121 MB, with no torch installed. `eunoia doctor` from the cold base venv: OK (50 writeups active, 6 tools).
+- **Cold-cache install (2026-11-19):** `pip install .` in a fresh virtual environment took 4 s, venv 16 MB (base CLI only, stdlib-only; it was 24 min / 5.8 GB when torch was a base dependency). `pip install ".[dev,server]"` cold took 65 s, venv 121 MB, with no torch installed. `eunoia doctor` from the cold base venv: OK (507 writeups active, 6 tools).
 - **Corpus: 507 writeups, 507/507 with embeddings, 45 unclassified (8.9%).**
 - **Source health: HackerOne ok, 0 consecutive failures.** Check the current numbers at [status](http://129.150.57.82:10004/v1/status).
 
@@ -171,6 +171,7 @@ Tests run against a dedicated `eunoia_test` database, never the dev database. `s
 
 ## Docs
 
+- [Showcases](docs/showcases.md) — three real cases with evidence: pre-test CSRF, mid-test SQL injection, and install/doctor end-to-end.
 - [Runbook](docs/runbook.md) — how the service runs, including the worker and supervisord setup.
 - [Transparency](docs/transparency.md) — what is served, what is not, and the open items.
 - [Takedown policy](docs/policies/takedown.md) — how a disclosure is removed on request.
