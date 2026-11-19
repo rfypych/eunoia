@@ -43,10 +43,14 @@ __all__ = [
     "Alias",
     "Classification",
     "apply_classification",
+    "classify_from_text",
     "classify_java_spring",
     "classify_vuln_class",
+    "classify_writeup_class",
     "load_aliases_from_csv",
     "load_aliases_from_db",
+    "reclassify_unclassified",
+    "reclassify_writeup",
     "seed_tech_aliases",
 ]
 
@@ -74,8 +78,15 @@ _EXTRA_ALIASES: dict[str, list[str]] = {
 
 _VERSION_RE = r"\d+\.\d+(?:\.\d+)?"
 
-# CWE -> vuln-class taxonomy (the registry's 13 categories). Only the
-# well-established mappings live here; anything else is "unclassified".
+# CWE -> vuln-class taxonomy. Only well-established mappings live
+# here; anything else is "unclassified". Expanded in T7 (19 Nov 2026)
+# from the live corpus: the 50-row production corpus had 20
+# unclassified rows and a 100-item Hacktivity probe had 56, all from
+# CWEs this map did not cover. Each mapping is the CWE's own
+# definition (CWE-352 *is* CSRF, CWE-400 *is* uncontrolled resource
+# consumption, CWE-200 *is* information exposure, CWE-294 *is*
+# authentication bypass by capture-replay, CWE-488 *is* exposure of
+# a data element to the wrong session, ...), never a guess.
 _CWE_TO_VULN_CLASS: dict[str, str] = {
     # XSS
     "CWE-79": "XSS",
@@ -102,7 +113,13 @@ _CWE_TO_VULN_CLASS: dict[str, str] = {
     "CWE-35": "Path Traversal",
     "CWE-36": "Path Traversal",
     # Auth Bypass
+    "CWE-261": "Auth Bypass",
     "CWE-287": "Auth Bypass",
+    "CWE-294": "Auth Bypass",
+    "CWE-295": "Auth Bypass",
+    "CWE-297": "Auth Bypass",
+    "CWE-304": "Auth Bypass",
+    "CWE-305": "Auth Bypass",
     "CWE-306": "Auth Bypass",
     "CWE-307": "Auth Bypass",
     "CWE-384": "Auth Bypass",
@@ -115,6 +132,52 @@ _CWE_TO_VULN_CLASS: dict[str, str] = {
     "CWE-1336": "SSTI",
     # Race Condition
     "CWE-362": "Race Condition",
+    # CSRF (T7: CWE-352 is the CSRF weakness itself)
+    "CWE-352": "CSRF",
+    # DoS: uncontrolled resource consumption / allocation without limits
+    "CWE-400": "DoS",
+    "CWE-667": "DoS",
+    "CWE-770": "DoS",
+    # Info Disclosure: exposure of sensitive data, in all its forms
+    "CWE-200": "Info Disclosure",
+    "CWE-201": "Info Disclosure",
+    "CWE-209": "Info Disclosure",
+    "CWE-212": "Info Disclosure",
+    "CWE-215": "Info Disclosure",
+    "CWE-311": "Info Disclosure",
+    "CWE-312": "Info Disclosure",
+    "CWE-319": "Info Disclosure",
+    "CWE-359": "Info Disclosure",
+    "CWE-488": "Info Disclosure",
+    # Memory Safety: out-of-bounds, overflow, use-after-free
+    "CWE-119": "Memory Safety",
+    "CWE-120": "Memory Safety",
+    "CWE-121": "Memory Safety",
+    "CWE-122": "Memory Safety",
+    "CWE-125": "Memory Safety",
+    "CWE-191": "Memory Safety",
+    "CWE-416": "Memory Safety",
+    "CWE-787": "Memory Safety",
+    # Privilege Escalation: improper privilege management, in all forms
+    "CWE-250": "Privilege Escalation",
+    "CWE-264": "Privilege Escalation",
+    "CWE-266": "Privilege Escalation",
+    "CWE-267": "Privilege Escalation",
+    "CWE-268": "Privilege Escalation",
+    "CWE-269": "Privilege Escalation",
+    # Injection (non-SQL, non-command): CRLF, LDAP, XPath
+    "CWE-90": "Injection",
+    "CWE-93": "Injection",
+    "CWE-113": "Injection",
+    "CWE-643": "Injection",
+    # Request Smuggling: inconsistent interpretation of HTTP requests
+    "CWE-444": "Request Smuggling",
+    # Open Redirect
+    "CWE-601": "Open Redirect",
+    # Unrestricted File Upload
+    "CWE-434": "Unrestricted File Upload",
+    # Clickjacking: improper restriction of UI layer rendering
+    "CWE-1021": "Clickjacking",
 }
 
 #: The registry's vuln-class taxonomy: every class the CWE map can
@@ -201,6 +264,175 @@ def classify_vuln_class(cwe_ids: Iterable[str]) -> str:
         if cwe in _CWE_TO_VULN_CLASS:
             return _CWE_TO_VULN_CLASS[cwe]
     return "unclassified"
+
+
+# --- Text fallback (T7) -------------------------------------------------
+# Fires ONLY when no CWE (HackerOne or NVD) maps to a class — e.g. the
+# Hacktivity API returns cwe=null for ~22% of disclosed reports.
+# Order matters: first match wins, most specific technique first, so
+# "Unauthenticated SSRF via ..." is SSRF (not Auth Bypass) and
+# "MongoDB Query Logs & Schema Leak via Unauthenticated Endpoint" is
+# Info Disclosure (not Auth Bypass).
+#
+# Every phrase is an explicit technique name observed in real
+# disclosed titles and measured against the 506-row corpus on
+# 19 Nov 2026: the set classifies 96 of the 145 NULL-CWE
+# unclassified rows (the rest are mostly implementation quirks with
+# no named technique, e.g. curl internals, or brand-new CVEs NVD
+# has not published yet). CWE rows the map gains from NVD data are
+# handled by the NVD backfill path, not by this list.
+#
+# This deliberately supersedes the MVP-era contract "no CWE means
+# unclassified, never guess from the title": a title that names its
+# technique ("SSRF", "bypass", "leak", "overflow", "ReDoS") IS the
+# report naming its class, and T7 acceptance (unclassified <10%)
+# is unreachable on the real corpus under the old contract (22-27%
+# of rows have no CWE at all). Bare technique acronyms (ssrf, xss,
+# csrf, idor, xxe, rce, sqli, lfi) are included for the same reason;
+# generic words that are not a technique ("vulnerability", "bug",
+# "issue") are not.
+_TEXT_PHRASES: list[tuple[str, str]] = [
+    ("SSRF", "ssrf"),
+    ("SSRF", "server-side request forgery"),
+    ("XSS", "xss"),
+    ("XSS", "cross-site scripting"),
+    ("XSS", "stored xss"),
+    ("XSS", "reflected xss"),
+    ("XSS", "dom xss"),
+    ("CSRF", "csrf"),
+    ("CSRF", "cross-site request forgery"),
+    ("SQLi", "blind sql injection"),
+    ("SQLi", "sql injection"),
+    ("SQLi", "sqli"),
+    ("IDOR", "idor"),
+    ("IDOR", "insecure direct object reference"),
+    ("XXE", "xxe"),
+    ("XXE", "xml external entity"),
+    ("XXE", "billion laughs"),
+    ("RCE", "rce"),
+    ("RCE", "remote code execution"),
+    ("RCE", "os command injection"),
+    ("RCE", "command injection"),
+    ("Request Smuggling", "request smuggling"),
+    ("Injection", "injection"),
+    ("Injection", "crlf injection"),
+    ("SSTI", "ssti"),
+    ("Path Traversal", "directory traversal"),
+    ("Path Traversal", "path traversal"),
+    ("Path Traversal", "unauthorized directories"),
+    ("Path Traversal", "arbitrary local file read"),
+    ("Path Traversal", "arbitrary file read"),
+    ("Path Traversal", "local file inclusion"),
+    ("Path Traversal", "lfi"),
+    ("Path Traversal", "overwrite"),
+    ("Memory Safety", "buffer overflow"),
+    ("Memory Safety", "out-of-bounds write"),
+    ("Memory Safety", "out-of-bounds read"),
+    ("Memory Safety", "heap overflow"),
+    ("Memory Safety", "stack overflow"),
+    ("Memory Safety", "overflow"),
+    ("Memory Safety", "underflow"),
+    ("Memory Safety", "out of bounds"),
+    ("Memory Safety", "use after free"),
+    ("Memory Safety", "use-after-free"),
+    ("Memory Safety", "double free"),
+    ("Memory Safety", "double-free"),
+    ("Info Disclosure", "information disclosure"),
+    ("Info Disclosure", "sensitive data exposure"),
+    ("Info Disclosure", "sensitive data"),
+    ("Info Disclosure", "sensitive exposure"),
+    ("Info Disclosure", "disclosure"),
+    ("Info Disclosure", "state leak"),
+    ("Info Disclosure", "leaks sensitive"),
+    ("Info Disclosure", "exposing donor"),
+    ("Info Disclosure", "leak"),
+    ("Info Disclosure", "leaks"),
+    ("Info Disclosure", "leaked"),
+    ("Info Disclosure", "leaking"),
+    ("Info Disclosure", "leakage"),
+    ("Info Disclosure", "expose"),
+    ("Info Disclosure", "exposes"),
+    ("Info Disclosure", "exposed"),
+    ("Info Disclosure", "exposing"),
+    ("Info Disclosure", "exposure"),
+    ("Info Disclosure", "exfiltration"),
+    ("Info Disclosure", "in plain text"),
+    ("Info Disclosure", "identity leakage"),
+    ("Info Disclosure", "data breach"),
+    ("Info Disclosure", "password hash"),
+    ("Info Disclosure", "file listing"),
+    ("Info Disclosure", "production data"),
+    ("Auth Bypass", "username takeover"),
+    ("Auth Bypass", "authorization codes are reusable"),
+    ("Auth Bypass", "trusts the presented"),
+    ("Auth Bypass", "authentication bypass"),
+    ("Auth Bypass", "bypasses authentication"),
+    ("Auth Bypass", "broken authentication"),
+    ("Auth Bypass", "revoked cert"),
+    ("Auth Bypass", "verification bypass"),
+    ("Auth Bypass", "bypassing"),
+    ("Auth Bypass", "bypass"),
+    ("Auth Bypass", "bypasses"),
+    ("Auth Bypass", "takeover"),
+    ("Auth Bypass", "brute force"),
+    ("Auth Bypass", "confused deputy"),
+    ("Auth Bypass", "authorization code"),
+    ("Auth Bypass", "authentication"),
+    ("Auth Bypass", "unauthenticated"),
+    ("Auth Bypass", "unauthorized"),
+    ("Auth Bypass", "unauthorised"),
+    ("Auth Bypass", "rate limit"),
+    ("Auth Bypass", "mitm"),
+    ("Auth Bypass", "man-in-the-middle"),
+    ("Auth Bypass", "starttls stripping"),
+    ("Auth Bypass", "ssl certificate"),
+    ("Auth Bypass", "without verifying"),
+    ("Auth Bypass", "after password change"),
+    ("Auth Bypass", "spf"),
+    ("Auth Bypass", "nonce reused"),
+    ("Auth Bypass", "auth context"),
+    ("Clickjacking", "clickjacking"),
+    ("Unrestricted File Upload", "unrestricted file upload"),
+    ("Race Condition", "race condition"),
+    ("Open Redirect", "open redirect"),
+    ("DoS", "denial of service"),
+    ("DoS", "denial-of-service"),
+    ("DoS", "starvation"),
+    ("DoS", "unbounded"),
+    ("DoS", "hangs indefinitely"),
+    ("DoS", "redos"),
+    ("DoS", "dos"),
+    ("DoS", "ddos"),
+    ("Privilege Escalation", "privilege escalation"),
+]
+
+
+def classify_from_text(title: str | None, excerpt: str | None) -> str:
+    """Strict phrase match over title + excerpt; "unclassified" when
+    no phrase matches. Word-boundary matching, like the tech matcher:
+    "csrf" must not match inside another word."""
+    text = _normalize(f"{title or ''} {excerpt or ''}")
+    for vuln_class, phrase in _TEXT_PHRASES:
+        if re.search(rf"(?<![\w]){re.escape(phrase)}(?![\w])", text):
+            return vuln_class
+    return "unclassified"
+
+
+def classify_writeup_class(
+    title: str | None,
+    excerpt: str | None,
+    cwe_ids: Iterable[str],
+) -> tuple[str, str]:
+    """Classify one writeup: CWE first (authoritative), text fallback
+    second, "unclassified" last. Returns ``(vuln_class, source)``
+    where source is "cwe", "text", or "unclassified"."""
+    cwe_class = classify_vuln_class(cwe_ids)
+    if cwe_class != "unclassified":
+        return cwe_class, "cwe"
+    text_class = classify_from_text(title, excerpt)
+    if text_class != "unclassified":
+        return text_class, "text"
+    return "unclassified", "unclassified"
 
 
 def _cpe_with_version(cpe: str, version: str | None) -> str:
@@ -341,7 +573,13 @@ def classify_java_spring(
             result.evidence.append(best_evidence)
 
     result.confidence = round(result.confidence, 2)
-    result.vuln_class = classify_vuln_class(_cwe_ids(writeup))
+    # T7: CWE first, strict text fallback second (a NULL CWE is common
+    # in Hacktivity data). classify_java_spring's own vuln_class keeps
+    # the same rule, so the tech classifier and the writeup classifier
+    # never disagree about a row's class.
+    result.vuln_class, _ = classify_writeup_class(
+        fields.get("title", ""), fields.get("excerpt", ""),
+        _cwe_ids(writeup))
     result.needs_review = result.vuln_class == "unclassified"
     return result
 
@@ -401,3 +639,67 @@ def apply_classification(
         row.vuln_class = classification.vuln_class
     session.flush()
     return row
+
+
+def reclassify_writeup(
+    session: Session, writeup: Writeup
+) -> tuple[str, str]:
+    """Re-run classification on an EXISTING writeup's vuln rows (T7
+    backfill / taxonomy upgrade).
+
+    Only rows whose class is NULL or "unclassified" are upgraded, and
+    only when the recomputed class is a real one. A row that already
+    carries a mapped class is never overwritten — reclassification
+    fills gaps, it does not second-guess earlier (or human) labels.
+    Returns ``(old, new)`` for the first upgraded row, or
+    ``(current, current)`` when nothing changed. Flush-only; the
+    caller owns the transaction.
+    """
+    rows = session.query(WriteupVuln).filter_by(
+        writeup_id=writeup.id).all()
+    first_change: tuple[str, str] | None = None
+    for row in rows:
+        current = row.vuln_class
+        if current is not None and current != "unclassified":
+            continue
+        cwe_ids = [row.cwe_id] if row.cwe_id else []
+        new_class, _ = classify_writeup_class(
+            writeup.title, writeup.excerpt, cwe_ids)
+        if new_class == "unclassified":
+            continue
+        row.vuln_class = new_class
+        if first_change is None:
+            first_change = (current or "unclassified", new_class)
+    session.flush()
+    if first_change is not None:
+        return first_change
+    current = rows[0].vuln_class if rows else None
+    return (current or "unclassified", current or "unclassified")
+
+
+def reclassify_unclassified(session: Session) -> tuple[int, int]:
+    """Reclassify every writeup that still has an unclassified vuln
+    row (T7 backfill step for rows ingested under the old taxonomy).
+
+    Returns ``(checked, changed)``: writeups examined vs writeups
+    where at least one row upgraded. Flush-only; the caller commits.
+    """
+    rows = (
+        session.query(WriteupVuln)
+        .filter(
+            (WriteupVuln.vuln_class.is_(None))
+            | (WriteupVuln.vuln_class == "unclassified")
+        )
+        .all()
+    )
+    writeup_ids = {row.writeup_id for row in rows}
+    changed = 0
+    for wid in sorted(writeup_ids, key=str):
+        writeup = session.get(Writeup, wid)
+        if writeup is None:
+            continue
+        old, new = reclassify_writeup(session, writeup)
+        if old != new:
+            changed += 1
+    session.flush()
+    return len(writeup_ids), changed

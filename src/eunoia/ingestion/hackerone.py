@@ -32,12 +32,14 @@ from __future__ import annotations
 
 import os
 import re
+import ssl
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from functools import partial
 from typing import Any
 
 import httpx
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from eunoia.classify import apply_classification, classify_vuln_class
@@ -51,7 +53,7 @@ from eunoia.dedup import (
     url_hash,
 )
 from eunoia.embed import embed_writeup
-from eunoia.enrich import enrich_cve
+from eunoia.enrich import cvss_to_severity, enrich_cve
 from eunoia.ingestion.jobs import enqueue_discovery, idempotency_key_for
 from eunoia.models import Job, Source, SourceHost, Writeup, WriteupEvent, WriteupSource, WriteupVuln
 from eunoia.safety.quality import detect_language, quality_gate
@@ -59,10 +61,15 @@ from eunoia.safety.quality import detect_language, quality_gate
 __all__ = [
     "HACKTIVITY_URL",
     "HACKERONE_HOST",
+    "BackfillResult",
     "HostPausedError",
     "PlanGatedError",
     "PollResult",
     "RateLimitedError",
+    "apply_cached_nvd",
+    "backfill_hackerone",
+    "count_active_writeups",
+    "count_unclassified_writeups",
     "handle_discovery_job",
     "normalize_cwe",
     "parse_hacktivity_item",
@@ -188,6 +195,14 @@ def _default_client() -> httpx.Client:
     instead of letting httpx re-parse the environment itself.
     ``api.hackerone.com`` is public and never in ``NO_PROXY``, so ignoring
     ``NO_PROXY`` here loses nothing.
+
+    T7: ``trust_env=False`` also makes httpx ignore ``SSL_CERT_FILE``,
+    which breaks TLS through an egress proxy that MITMs with its own CA
+    (the proxy CA is not in certifi's bundle, which httpx prefers when
+    the certifi package is installed). When ``SSL_CERT_FILE`` is set,
+    build a context from that bundle explicitly (a plain path string
+    is deprecated by httpx); when unset, behaviour is the plain
+    default.
     """
     proxy = (
         os.environ.get("HTTPS_PROXY")
@@ -195,7 +210,13 @@ def _default_client() -> httpx.Client:
         or os.environ.get("HTTP_PROXY")
         or os.environ.get("http_proxy")
     )
-    return httpx.Client(timeout=30.0, proxy=proxy or None, trust_env=False)
+    kwargs: dict[str, object] = {
+        "timeout": 30.0, "proxy": proxy or None, "trust_env": False,
+    }
+    ca_bundle = os.environ.get("SSL_CERT_FILE")
+    if ca_bundle:
+        kwargs["verify"] = ssl.create_default_context(cafile=ca_bundle)
+    return httpx.Client(**kwargs)  # type: ignore[arg-type]
 
 
 def _default_url_checker(url: str) -> bool:
@@ -510,6 +531,289 @@ def _poll(
     )
 
 
+@dataclass
+class BackfillResult:
+    """Outcome of one :func:`backfill_hackerone` run (T7)."""
+
+    pages_fetched: int
+    discovered: int
+    created: int
+    merged: int
+    skipped: int
+    failed: int
+    active_total: int
+    unclassified: int
+    stopped_reason: str  # target_reached | exhausted | page_cap
+
+
+def count_active_writeups(session: Session) -> int:
+    return session.execute(
+        select(func.count()).select_from(Writeup).where(
+            Writeup.status == "active")
+    ).scalar_one()
+
+
+def count_unclassified_writeups(session: Session) -> int:
+    """Active writeups with at least one unclassified vuln row."""
+    return session.execute(
+        select(func.count(func.distinct(WriteupVuln.writeup_id)))
+        .join(Writeup, Writeup.id == WriteupVuln.writeup_id)
+        .where(
+            Writeup.status == "active",
+            or_(WriteupVuln.vuln_class.is_(None),
+                WriteupVuln.vuln_class == "unclassified"),
+        )
+    ).scalar_one()
+
+
+def backfill_hackerone(
+    session: Session,
+    target_active: int = 500,
+    *,
+    page_size: int = PAGE_SIZE_MAX,
+    max_pages: int = 100,
+    client: httpx.Client | None = None,
+    model=None,
+    url_checker=None,
+    limiter=None,
+) -> BackfillResult:
+    """Page BACK through older disclosed Hacktivity reports (T7).
+
+    The poller only walks forward from the cursor, so the corpus
+    stalls at whatever the newest pages hold (~50 rows). Backfill
+    walks newest-first from page 1 — re-encountering the already
+    ingested newest rows is harmless (dedup merges them) — and
+    processes each discovery job through the same pipeline as the
+    poller (classify → quality gate → NVD enrich → embed), one page
+    at a time, committing per page so progress is durable.
+
+    Stops at ``target_active`` active writeups, on an empty page
+    (the source is exhausted — note the API returns only 10 items
+    per page after page 1 despite ``page[size]=100``, so a short
+    page is NOT an exhaustion signal), or on ``max_pages``. A 403 /
+    429 raises exactly like the poller (plan-gated / rate-limited);
+    a single job that fails is counted and skipped, never aborting
+    the run. No rows are invented: every writeup comes from a
+    disclosed HackerOne report.
+    """
+    from eunoia.ingestion.jobs import dispatch_job, process_job
+
+    source = session.get(Source, "hackerone")
+    if source is None:
+        raise ValueError("source 'hackerone' not found; seed sources first")
+    http = client or _default_client()
+    now = _now()
+    cursor = _cursor(source)
+    pages = discovered = created = merged = skipped = failed = 0
+    stopped = "page_cap"
+    try:
+        for page in range(1, max_pages + 1):
+            if count_active_writeups(session) >= target_active:
+                stopped = "target_reached"
+                break
+            response = http.get(
+                HACKTIVITY_URL,
+                params={
+                    "sort": "-disclosed_at",
+                    "page[size]": min(page_size, PAGE_SIZE_MAX),
+                    "page[number]": page,
+                },
+            )
+            if response.status_code == 403:
+                source.consecutive_failures = int(source.consecutive_failures or 0) + 1
+                source.last_poll_at = now
+                source.cursor_state = {**cursor, "blocked": "plan_gated_403"}
+                session.commit()
+                raise PlanGatedError(
+                    "HackerOne Hacktivity returned 403: API access is not "
+                    "included in the current plan"
+                )
+            if response.status_code == 429:
+                _record_429(session, source, cursor, now.date())
+                source.consecutive_failures = int(source.consecutive_failures or 0) + 1
+                source.last_poll_at = now
+                session.commit()
+                raise RateLimitedError(
+                    "HackerOne Hacktivity returned 429; host backed off 60s"
+                )
+            response.raise_for_status()
+            items = response.json().get("data") or []
+            if not items:
+                stopped = "exhausted"
+                break
+            pages += 1
+            for item in items:
+                parsed = parse_hacktivity_item(item)
+                if parsed is None:
+                    skipped += 1
+                    continue
+                discovered += 1
+                job = enqueue_discovery(
+                    session, source_id="hackerone", event=parsed)
+                handler = partial(
+                    dispatch_job, model=model, client=client,
+                    limiter=limiter, url_checker=url_checker)
+                try:
+                    outcome = process_job(session, job.id, handler)
+                except Exception:
+                    failed += 1
+                    continue
+                if outcome == "created":
+                    created += 1
+                elif outcome == "merged":
+                    merged += 1
+            session.commit()
+            if count_active_writeups(session) >= target_active:
+                stopped = "target_reached"
+                break
+    finally:
+        if client is None:
+            http.close()
+    return BackfillResult(
+        pages_fetched=pages,
+        discovered=discovered,
+        created=created,
+        merged=merged,
+        skipped=skipped,
+        failed=failed,
+        active_total=count_active_writeups(session),
+        unclassified=count_unclassified_writeups(session),
+        stopped_reason=stopped,
+    )
+
+
+def apply_cached_nvd(
+    session: Session,
+    *,
+    client=None,
+    limiter=None,
+) -> tuple[int, dict[str, int]]:
+    """Re-apply NVD records to rows that still lack CVSS / severity /
+    class (T7).
+
+    The discovery pipeline enriches at ingest time, but NVD lags
+    brand-new CVE-2026-* ids by days: the enrich degrades to an empty
+    record and queues an ``nvd_refresh`` job, and the drain of that
+    job only fills ``cve_cache`` — the writeup row itself never sees
+    the late data. This closes the gap: for every active writeup whose
+    vuln row carries a CVE but still lacks a CVSS, a severity, or a
+    mapped class, fetch (or serve from fresh cache) the NVD record
+    and apply it with the same backfill-only rules as
+    :func:`_apply_nvd_record`.
+
+    With ``client=None`` no HTTP is issued at all: only fresh cache
+    rows are applied, so the function is safe to run offline. With a
+    client, ``enrich_cve`` fetches on a stale/missing row, paced by
+    the caller's limiter (NVD without a key: 5 requests / 30 s).
+    Returns ``(writeups_checked, {"cvss": n, "severity": n,
+    "class": n})`` — counts of rows where each field actually changed.
+    Flush-only; the caller commits.
+    """
+    from eunoia.models import CveCache
+
+    candidates = (
+        session.query(WriteupVuln)
+        .join(Writeup, Writeup.id == WriteupVuln.writeup_id)
+        .where(
+            Writeup.status == "active",
+            WriteupVuln.cve_id.is_not(None),
+            or_(
+                WriteupVuln.cvss_score.is_(None),
+                WriteupVuln.severity.is_(None),
+                WriteupVuln.vuln_class.is_(None),
+                WriteupVuln.vuln_class == "unclassified",
+            ),
+        )
+        .all()
+    )
+    writeup_ids = {row.writeup_id for row in candidates}
+    updated = {"cvss": 0, "severity": 0, "class": 0}
+    now = _now()
+    for cve_id in sorted({row.cve_id for row in candidates if row.cve_id}):
+        if client is None:
+            row = session.get(CveCache, cve_id)
+            if row is None or row.expires_at is None \
+                    or row.expires_at <= now:
+                continue
+            record = _record_from_cache_row(row)
+        else:
+            record = enrich_cve(
+                cve_id, session=session, client=client, limiter=limiter)
+        if record is None:
+            continue
+        affected = [r for r in candidates if r.cve_id == cve_id]
+        for vuln_row in affected:
+            before = (
+                vuln_row.cvss_score is None,
+                vuln_row.severity is None,
+                vuln_row.vuln_class in (None, "unclassified"),
+            )
+            writeup = session.get(Writeup, vuln_row.writeup_id)
+            if writeup is None:
+                continue
+            _apply_nvd_record(session, writeup, record)
+            session.flush()
+            if before[0] and vuln_row.cvss_score is not None:
+                updated["cvss"] += 1
+            if before[1] and vuln_row.severity is not None:
+                updated["severity"] += 1
+            if before[2] and vuln_row.vuln_class not in (
+                    None, "unclassified"):
+                updated["class"] += 1
+    session.flush()
+    return len(writeup_ids), updated
+
+
+def _record_from_cache_row(row):
+    """Build a CveRecord-shaped object from a fresh ``CveCache`` row
+    (no HTTP)."""
+    from eunoia.enrich import CveRecord
+
+    return CveRecord(
+        cvss_score=float(row.cvss_score) if row.cvss_score is not None else None,
+        cvss_vector=row.cvss_vector,
+        cwe_ids=list(row.cwe_ids or []),
+        kev=bool(row.kev),
+        kev_date_added=row.kev_date_added,
+        epss=float(row.epss) if row.epss is not None else None,
+        epss_percentile=(
+            float(row.epss_percentile)
+            if row.epss_percentile is not None else None
+        ),
+    )
+
+
+def _apply_nvd_record(session: Session, writeup: Writeup, record) -> None:
+    """Backfill one NVD record onto a writeup's vuln rows (T7).
+
+    Only fills gaps, never overwrites platform data: ``cvss_score``
+    / ``cvss_vector`` when missing, ``severity`` (NVD band) +
+    ``severity_source="nvd"`` only when the row has no severity at
+    all, and ``vuln_class`` only when the row is still unclassified
+    and the NVD CWEs map to a class. A record with no CVSS and no
+    CWEs (unknown to NVD yet - brand-new CVE-2026-* ids lag NVD by
+    days) changes nothing; the queued ``nvd_refresh`` job retries
+    later.
+    """
+    if record is None:
+        return
+    rows = session.query(WriteupVuln).filter_by(
+        writeup_id=writeup.id).all()
+    for row in rows:
+        if row.cvss_score is None and record.cvss_score is not None:
+            row.cvss_score = record.cvss_score
+            row.cvss_vector = record.cvss_vector
+        if row.severity is None and record.cvss_score is not None:
+            row.severity = cvss_to_severity(record.cvss_score)
+            row.severity_source = "nvd"
+        if (row.vuln_class is None or row.vuln_class == "unclassified") \
+                and record.cwe_ids:
+            mapped = classify_vuln_class(record.cwe_ids)
+            if mapped != "unclassified":
+                row.vuln_class = mapped
+    session.flush()
+
+
 # ---------------------------------------------------------------------------
 # Worker: discovery job -> upserted Writeup (never blind-insert)
 # ---------------------------------------------------------------------------
@@ -777,8 +1081,17 @@ def _run_enrichment_pipeline(
     for cve_id in cve_ids:
         try:
             with session.begin_nested():
-                enrich_cve(cve_id, session=session, client=client, limiter=limiter)
+                record = enrich_cve(
+                    cve_id, session=session, client=client, limiter=limiter)
             enriched.append(cve_id)
+            # T7: the enrichment result used to be discarded, so a
+            # row whose HackerOne data had no CWE/severity kept
+            # neither — which is exactly why the 19 Nov 2026 recall
+            # misses happened (severity NULL rows cannot rank). Apply
+            # the NVD record to the vuln rows, but only as backfill:
+            # a HackerOne severity is never overwritten, and a mapped
+            # class is never replaced.
+            _apply_nvd_record(session, writeup, record)
         except Exception as exc:
             errors.append(f"enrich {cve_id}: {exc}")
     try:

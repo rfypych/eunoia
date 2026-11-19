@@ -29,7 +29,30 @@ from eunoia.ingestion.nvd import (
 )
 from eunoia.models import CveCache, Job
 
-__all__ = ["CACHE_TTL", "CveRecord", "enrich_cve", "handle_nvd_refresh_job"]
+__all__ = ["CACHE_TTL", "CveRecord", "cvss_to_severity", "enrich_cve", "handle_nvd_refresh_job"]
+
+
+def cvss_to_severity(cvss_score: float | None) -> str | None:
+    """Map a CVSS base score to NVD's qualitative severity rating.
+
+    Bands are NVD's own (0.0 None, 0.1–3.9 Low, 4.0–6.9 Medium,
+    7.0–8.9 High, 9.0–10.0 Critical). Used by the ingestion pipeline
+    to backfill a severity ONLY when the HackerOne row has none — a
+    CVSS score is measured data, not a guess. Returns None for a
+    missing score.
+    """
+    if cvss_score is None:
+        return None
+    score = float(cvss_score)
+    if score <= 0.0:
+        return "none"
+    if score < 4.0:
+        return "low"
+    if score < 7.0:
+        return "medium"
+    if score < 9.0:
+        return "high"
+    return "critical"
 
 
 def handle_nvd_refresh_job(

@@ -111,15 +111,17 @@ Current scope, measured 2026-11-19: **50 real HackerOne writeups, Java/Spring on
 
 ## Measured results (2026-11-19)
 
-Measured read-only on the real production corpus of 50 writeups, 20 queries, 2026-11-19. Production was not changed by the measurement.
+Measured read-only on the live production corpus of 507 writeups, 21 queries, 2026-11-19. Production was not changed by the measurement.
 
-- **Recall@10: 0.90** overall (pre-test 1.00, mid-test 0.75). The 3 misses were all mid-test.
-- **Latency: p50 20.34 ms, p95 32.66 ms.**
+- **Recall@10: 0.9048** overall (pre-test 1.00, mid-test 0.714). The 2 misses were both mid-test, both 2022 reports with low severity and no CVSS.
+- **Latency: p50 46.89 ms, p95 78.45 ms.**
 - **Cold-cache install (2026-11-19):** `pip install .` in a fresh virtual environment took 4 s, venv 16 MB (base CLI only, stdlib-only; it was 24 min / 5.8 GB when torch was a base dependency). `pip install ".[dev,server]"` cold took 65 s, venv 121 MB, with no torch installed. `eunoia doctor` from the cold base venv: OK (50 writeups active, 6 tools).
-- **Corpus: 50 writeups, 50/50 with embeddings, 0 quarantined rows in the top 10.**
+- **Corpus: 507 writeups, 507/507 with embeddings, 45 unclassified (8.9%).**
 - **Source health: HackerOne ok, 0 consecutive failures.** Check the current numbers at [status](http://129.150.57.82:10004/v1/status).
 
-Honest limits, same date: recall was measured on a 50-writeup corpus, so it is not a launch-grade number yet. The 7-day poller window started 2026-11-19 02:49 UTC and ends around 2026-11-26. The website/demo is live at http://129.150.57.82:10004/ — search from the page calls the live API. The `eunoia-agents` package is not on PyPI yet; the install command that works today is `pip install .` from a checkout (see Install above).
+Previous measurement, same date, on the 50-writeup corpus: recall@10 0.90 (pre-test 1.00, mid-test 0.75), p50 20.34 ms, p95 32.66 ms; the 3 misses were all mid-test.
+
+Honest limits, same date: recall was measured on a 507-writeup corpus, so it is not a launch-grade number yet, and the production margin is thin (19/21 — one more miss would fall below 0.90). The 7-day poller window started 2026-11-19 02:49 UTC and ends around 2026-11-26. The website/demo is live at http://129.150.57.82:10004/ — search from the page calls the live API. The `eunoia-agents` package is not on PyPI yet; the install command that works today is `pip install .` from a checkout (see Install above).
 
 ## Development setup (one command)
 

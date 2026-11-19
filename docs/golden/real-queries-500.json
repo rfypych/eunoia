@@ -1,0 +1,238 @@
+[
+  {
+    "id": "rq01",
+    "mode": "pre_test",
+    "notes": "CWE CWE-125: all 5 servable rows.",
+    "cwe": "CWE-125",
+    "expected_writeup_ids": [
+      "w_01a1f428f0a576c48816f677af532ce9",
+      "w_01a1f428f5567f39bd2af10a436fdd32",
+      "w_01a1f42972cd73debc6a079c238ea823",
+      "w_01a1f429889e718bb3d1fb2b716d49c8",
+      "w_01a1f42d090f753b943d80e77c60d062"
+    ]
+  },
+  {
+    "id": "rq02",
+    "mode": "pre_test",
+    "notes": "CWE CWE-352: all 5 servable rows.",
+    "cwe": "CWE-352",
+    "expected_writeup_ids": [
+      "w_01a1f427e08c78469f613234afa86f99",
+      "w_01a1f4284aa67a69884926224764a650",
+      "w_01a1f42d786a7862970f176544eb0915",
+      "w_01a1f42e1d1e7b3fa75da85133b81045",
+      "w_01a1f431157270e8b5bcb197aa8b74bc"
+    ]
+  },
+  {
+    "id": "rq03",
+    "mode": "pre_test",
+    "notes": "CWE CWE-502: all 4 servable rows.",
+    "cwe": "CWE-502",
+    "expected_writeup_ids": [
+      "w_01a1f42cfa577f82876828912025e019",
+      "w_01a1f42df87f7d90aa47bc5a8f0c25e0",
+      "w_01a1f42f3d2f75ecb8680c33302acee3",
+      "w_01a1f431ddcb7cb2bfddd593d5aea967"
+    ]
+  },
+  {
+    "id": "rq04",
+    "mode": "pre_test",
+    "notes": "CWE CWE-78: all 4 servable rows.",
+    "cwe": "CWE-78",
+    "expected_writeup_ids": [
+      "w_01a1f428c92b7413b0fd7864c6370cb4",
+      "w_01a1f42c26f272839a8f646609021190",
+      "w_01a1f42c6ecc7a42b50c135abca8217b",
+      "w_01a1f42e6a5e7b86a17d05b3ee5acb2e"
+    ]
+  },
+  {
+    "id": "rq05",
+    "mode": "pre_test",
+    "notes": "Exact CVE lookup: TLS verifyhost bypass in rustls, mbedTLS, and wolfSSL when v.",
+    "cve": "CVE-2013-4545",
+    "expected_writeup_ids": [
+      "w_01a1f42a3ead7e08be9148331501a13d"
+    ]
+  },
+  {
+    "id": "rq06",
+    "mode": "pre_test",
+    "notes": "Exact CVE lookup: [HTAF4-213] [Pre-submission] Unsafe AMF deserialization (CVE.",
+    "cve": "CVE-2017-5641",
+    "expected_writeup_ids": [
+      "w_01a1f42cfa577f82876828912025e019"
+    ]
+  },
+  {
+    "id": "rq07",
+    "mode": "pre_test",
+    "notes": "Exact CVE lookup: [CVE-2018-0296] Cisco VPN path traversal on the https://\u2588\u2588\u2588\u2588.",
+    "cve": "CVE-2018-0296",
+    "expected_writeup_ids": [
+      "w_01a1f42d05257aa5a426e381fde33b95"
+    ]
+  },
+  {
+    "id": "rq08",
+    "mode": "pre_test",
+    "notes": "Class CSRF: all 5 servable rows.",
+    "vuln_class": "CSRF",
+    "expected_writeup_ids": [
+      "w_01a1f427e08c78469f613234afa86f99",
+      "w_01a1f4284aa67a69884926224764a650",
+      "w_01a1f42d786a7862970f176544eb0915",
+      "w_01a1f42e1d1e7b3fa75da85133b81045",
+      "w_01a1f431157270e8b5bcb197aa8b74bc"
+    ]
+  },
+  {
+    "id": "rq09",
+    "mode": "pre_test",
+    "notes": "Class Clickjacking: all 5 servable rows.",
+    "vuln_class": "Clickjacking",
+    "expected_writeup_ids": [
+      "w_01a1f430faf17c2fb9cc623d9d03f5f2",
+      "w_01a1f43121e970f49a5f86f577b44e3f",
+      "w_01a1f43126bb7bb79ae3f2b91fd4d7d5",
+      "w_01a1f4312ac37317ae2f874d6d5a202c",
+      "w_01a1f4314da172e7ad5d2f6a8a41000c"
+    ]
+  },
+  {
+    "id": "rq10",
+    "mode": "pre_test",
+    "notes": "Class Deserialization: all 5 servable rows.",
+    "vuln_class": "Deserialization",
+    "expected_writeup_ids": [
+      "w_01a1f42cfa577f82876828912025e019",
+      "w_01a1f42d3dd3721a81b6ff7cccb66154",
+      "w_01a1f42df87f7d90aa47bc5a8f0c25e0",
+      "w_01a1f42f3d2f75ecb8680c33302acee3",
+      "w_01a1f431ddcb7cb2bfddd593d5aea967"
+    ]
+  },
+  {
+    "id": "rq11",
+    "mode": "pre_test",
+    "notes": "Tech curl: 4 servable rows match.",
+    "tech": [
+      "curl"
+    ],
+    "expected_writeup_ids": [
+      "w_01a1f428bbf3745498b0adf97cd357d1",
+      "w_01a1f42b533676c8b09c75b82d9c5890",
+      "w_01a1f42b6abb703c8111099a4f539d6d",
+      "w_01a1f430580e72dba794f2e3198a6997"
+    ]
+  },
+  {
+    "id": "rq12",
+    "mode": "pre_test",
+    "notes": "Tech non-production: 5 servable rows match.",
+    "tech": [
+      "non-production"
+    ],
+    "expected_writeup_ids": [
+      "w_01a1f42b97e27aca939e6869c4d6491d",
+      "w_01a1f42ba13f7cad99e29e6b06beb7aa",
+      "w_01a1f42ba9917b23814e8a5dfe874bf0",
+      "w_01a1f42bbc2d7231a2e9920b7a4ca81f",
+      "w_01a1f42be5ba7cba9b70e46f66cd36ed"
+    ]
+  },
+  {
+    "id": "rq13",
+    "mode": "pre_test",
+    "notes": "Tech wordpress: 3 servable rows match.",
+    "tech": [
+      "wordpress"
+    ],
+    "expected_writeup_ids": [
+      "w_01a1f428b39878e085bbc9e7843ec195",
+      "w_01a1f428d5b177c6adcd6b60b56f7d06",
+      "w_01a1f42978fe7a85be2ee144164669c5"
+    ]
+  },
+  {
+    "id": "rq14",
+    "mode": "pre_test",
+    "notes": "Tech mariadb: 5 servable rows match.",
+    "tech": [
+      "mariadb"
+    ],
+    "expected_writeup_ids": [
+      "w_01a1f428b6d17a249a69ff2564e99b8b",
+      "w_01a1f42965e97c93adb9346e96c48588",
+      "w_01a1f42975eb7c68a2ce1db6ed4ed4be",
+      "w_01a1f429a1277ce1aac2ac50586dc2d6",
+      "w_01a1f429a8997171a35fe7f155087f9e"
+    ]
+  },
+  {
+    "id": "rq15",
+    "mode": "mid_test",
+    "notes": "Mid-test: technique evidence for  All stored Slack and Teams credentials can be deleted via M.",
+    "evidence_pattern": "All stored Slack",
+    "expected_writeup_ids": [
+      "w_01a1f427e08c78469f613234afa86f99"
+    ]
+  },
+  {
+    "id": "rq16",
+    "mode": "mid_test",
+    "notes": "Mid-test: technique evidence for CVE-2026-115529: Schannel TLS auto client session resumption.",
+    "evidence_pattern": "Schannel TLS auto client session",
+    "expected_writeup_ids": [
+      "w_01a1f428fc0978358da571e0a2643d69"
+    ]
+  },
+  {
+    "id": "rq17",
+    "mode": "mid_test",
+    "notes": "Mid-test: technique evidence for TLS peer-verification bypass via mid-transfer ssl_config mut.",
+    "evidence_pattern": "TLS peer-verification bypass",
+    "expected_writeup_ids": [
+      "w_01a1f42a3b947190acc51c4f86d9a586"
+    ]
+  },
+  {
+    "id": "rq18",
+    "mode": "mid_test",
+    "notes": "Mid-test: technique evidence for Overwrite any file of the web server.",
+    "evidence_pattern": "Overwrite any file",
+    "expected_writeup_ids": [
+      "w_01a1f42c399e71c28c3c865230d0da9a"
+    ]
+  },
+  {
+    "id": "rq19",
+    "mode": "mid_test",
+    "notes": "Mid-test: technique evidence for Subdomain takeover on one of the subdomain under mozaws.net.",
+    "evidence_pattern": "subdomain under mozaws",
+    "expected_writeup_ids": [
+      "w_01a1f42d5093784287087d95495d4a92"
+    ]
+  },
+  {
+    "id": "rq20",
+    "mode": "mid_test",
+    "notes": "Mid-test: technique evidence for Public Apache Tomcat /examples example directory.",
+    "evidence_pattern": "Public Apache Tomcat",
+    "expected_writeup_ids": [
+      "w_01a1f430106b7475859687bb5e800b28"
+    ]
+  },
+  {
+    "id": "rq21",
+    "mode": "mid_test",
+    "notes": "Mid-test: technique evidence for IPv4 only clusters susceptible to MitM attacks via IPv6 rogu.",
+    "evidence_pattern": "IPv4 only clusters susceptible",
+    "expected_writeup_ids": [
+      "w_01a1f4313cf572ae9aead599e2c2dcb1"
+    ]
+  }
+]

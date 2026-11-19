@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import re
+import ssl
 import time
 from dataclasses import dataclass, field
 
@@ -45,6 +46,11 @@ def default_http_client() -> httpx.Client:
 
     See the module docstring: httpx's env-proxy parser crashes on the
     bracketed IPv6 entries in ``NO_PROXY`` here.
+
+    T7: like the HackerOne client, pass ``SSL_CERT_FILE`` explicitly
+    when set — ``trust_env=False`` makes httpx ignore it, and the
+    egress proxy's MITM CA is not in certifi's bundle. A context
+    built from the bundle (a plain path string is deprecated).
     """
     proxy = (
         os.environ.get("HTTPS_PROXY")
@@ -52,7 +58,13 @@ def default_http_client() -> httpx.Client:
         or os.environ.get("HTTP_PROXY")
         or os.environ.get("http_proxy")
     )
-    return httpx.Client(timeout=30.0, proxy=proxy or None, trust_env=False)
+    kwargs: dict[str, object] = {
+        "timeout": 30.0, "proxy": proxy or None, "trust_env": False,
+    }
+    ca_bundle = os.environ.get("SSL_CERT_FILE")
+    if ca_bundle:
+        kwargs["verify"] = ssl.create_default_context(cafile=ca_bundle)
+    return httpx.Client(**kwargs)  # type: ignore[arg-type]
 
 
 @dataclass

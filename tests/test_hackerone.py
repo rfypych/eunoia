@@ -538,3 +538,274 @@ def test_worker_records_title_candidate(session, hackerone_source):
         writeup_id=created.id, event="created").one()
     assert ev.detail["dedup"] == "title_candidate"
     assert ev.detail["candidate_of"] == existing.api_id
+
+
+# --- T7: backfill to 500 + NVD backfill in the pipeline --------------------
+# The poller only walks forward from the cursor (newest first); the
+# corpus can only grow past ~50 by paging BACK through older disclosed
+# reports. Backfill does exactly that, newest-first, stopping at the
+# target, on an empty page, or on the page cap — never by inventing
+# rows. All HTTP is respx-mocked; the DB is the test DB.
+
+def _nvd_payload_94265() -> dict:
+    """NVD 2.0 body for CVE-2026-94265 as observed live 19 Nov 2026:
+    CVSS 9.1, CWE-200. The HackerOne row carries cwe=None and no
+    severity, so the pipeline must backfill all three from NVD."""
+    return {
+        "resultsPerPage": 1, "startIndex": 0, "totalResults": 1,
+        "format": "NVD_CVE", "version": "2.0",
+        "vulnerabilities": [{
+            "cve": {
+                "id": "CVE-2026-94265",
+                "sourceIdentifier": "cve@mitre.org",
+                "published": "2026-11-03T23:17:25.910",
+                "lastModified": "2026-11-12T22:09:39.233",
+                "vulnStatus": "Analyzed",
+                "descriptions": [{"lang": "en",
+                                  "value": "Authorization header sent to foreign origin"}],
+                "metrics": {"cvssMetricV31": [{
+                    "source": "nvd@nist.gov", "type": "Primary",
+                    "cvssData": {"version": "3.1", "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H",
+                                 "baseScore": 9.1, "baseSeverity": "CRITICAL"},
+                }]},
+                "weaknesses": [{"source": "nvd@nist.gov", "type": "Primary",
+                                "description": [{"lang": "en", "value": "CWE-200"}]}],
+            },
+        }],
+    }
+
+
+def test_t7_backfill_stops_at_target(session, hackerone_source, http_client):
+    from eunoia.ingestion.hackerone import backfill_hackerone
+    from eunoia.ingestion.nvd import NVD_API_URL
+
+    page1 = [_item(111, "SSRF via PDF parser"),
+             _item(222, "IDOR on profile API"),
+             _item(333, "XSS in comment box", cwe="CWE-79")]
+    page2 = [_item(444, "RCE in uploader", cwe="CWE-78"),
+             _item(555, "SQLi in search", cwe="CWE-89")]
+    with respx.mock as router:
+        route = router.get(HACKTIVITY_URL).mock(side_effect=[
+            Response(200, json=_page(page1)),
+            Response(200, json=_page(page2)),
+        ])
+        result = backfill_hackerone(
+            session, target_active=2, client=http_client,
+            url_checker=lambda url: True)
+    assert len(route.calls) == 1  # page 2 never fetched
+    assert result.pages_fetched == 1
+    assert result.created == 3
+    assert result.stopped_reason == "target_reached"
+    assert result.active_total == 3
+    assert session.query(Writeup).filter_by(status="active").count() == 3
+
+
+def test_t7_backfill_skips_ingested_and_stops_on_empty_page(
+        session, hackerone_source, http_client):
+    from eunoia.ingestion.hackerone import backfill_hackerone
+
+    first = enqueue_discovery(session, source_id="hackerone",
+                              event=parse_hacktivity_item(
+                                  _item(111, "SSRF via PDF parser")))
+    assert handle_discovery_job(session, first,
+                                url_checker=lambda url: True) == "created"
+    session.commit()
+    page1 = [_item(111, "SSRF via PDF parser"),
+             _item(222, "IDOR on profile API"),
+             _item(333, None, disclosed=False)]
+    with respx.mock as router:
+        route = router.get(HACKTIVITY_URL).mock(side_effect=[
+            Response(200, json=_page(page1)),
+            Response(200, json=_page([])),
+        ])
+        result = backfill_hackerone(
+            session, target_active=500, client=http_client,
+            url_checker=lambda url: True)
+    assert len(route.calls) == 2  # the empty page was fetched, then stop
+    assert result.pages_fetched == 1  # only pages with items count
+    assert result.created == 1
+    assert result.merged == 1
+    assert result.skipped == 1  # the undisclosed item
+    assert result.stopped_reason == "exhausted"
+    assert result.active_total == 2
+
+
+def test_t7_backfill_429_raises_rate_limited(session, hackerone_source, http_client):
+    from eunoia.ingestion.hackerone import backfill_hackerone
+
+    with respx.mock as router:
+        router.get(HACKTIVITY_URL).mock(return_value=Response(429, json={}))
+        with pytest.raises(RateLimitedError):
+            backfill_hackerone(session, target_active=500, client=http_client,
+                               url_checker=lambda url: True)
+    assert session.query(Writeup).count() == 0
+
+
+def test_t7_pipeline_backfills_cvss_severity_and_class_from_nvd(
+        session, hackerone_source, http_client):
+    """CVE-2026-94265, verified live 19 Nov 2026: HackerOne gives no
+    CWE and no severity; NVD gives CVSS 9.1 + CWE-200. The pipeline
+    must store the CVSS, derive severity critical (source nvd), and
+    classify Info Disclosure — the same data the ranking needs."""
+    from eunoia.ingestion.nvd import NVD_API_URL, TokenBucket
+
+    parsed = parse_hacktivity_item(_item(
+        94265, "CVE-2026-94265: Authorization: Negotiate sent to foreign origin",
+        cwe=None, cve_ids=["CVE-2026-94265"], severity=None,
+        vuln_info="Authorization: Negotiate sent to foreign origin"))
+    assert parsed["cwe"] is None and parsed["severity"] is None
+    job = enqueue_discovery(session, source_id="hackerone", event=parsed)
+    with respx.mock as router:
+        router.get(NVD_API_URL).mock(
+            return_value=Response(200, json=_nvd_payload_94265()))
+        assert handle_discovery_job(
+            session, job, client=http_client,
+            limiter=TokenBucket(5, 30),
+            url_checker=lambda url: True) == "created"
+    vuln = session.query(WriteupVuln).one()
+    assert float(vuln.cvss_score) == 9.1
+    assert vuln.severity == "critical"
+    assert vuln.severity_source == "nvd"
+    assert vuln.vuln_class == "Info Disclosure"
+
+
+def test_t7_pipeline_keeps_hackerone_severity_over_nvd(
+        session, hackerone_source, http_client):
+    """A HackerOne severity is platform data: NVD CVSS is stored for
+    ranking (normalize_severity prefers CVSS), but the severity enum
+    itself is never overwritten by the NVD-derived band."""
+    from eunoia.ingestion.nvd import NVD_API_URL, TokenBucket
+
+    parsed = parse_hacktivity_item(_item(
+        94265, "CVE-2026-94265: Authorization: Negotiate sent to foreign origin",
+        cwe=None, cve_ids=["CVE-2026-94265"], severity="Medium",
+        vuln_info="Authorization: Negotiate sent to foreign origin"))
+    job = enqueue_discovery(session, source_id="hackerone", event=parsed)
+    with respx.mock as router:
+        router.get(NVD_API_URL).mock(
+            return_value=Response(200, json=_nvd_payload_94265()))
+        handle_discovery_job(
+            session, job, client=http_client,
+            limiter=TokenBucket(5, 30),
+            url_checker=lambda url: True)
+    vuln = session.query(WriteupVuln).one()
+    assert float(vuln.cvss_score) == 9.1
+    assert vuln.severity == "medium"
+    assert vuln.severity_source == "hackerone"
+
+
+def test_t7_default_client_uses_ssl_cert_file(monkeypatch):
+    """This VM's egress proxy MITMs TLS; httpx with trust_env=False
+    ignores SSL_CERT_FILE, so the poller client must pass the bundle
+    explicitly when the env var is set. Without it, behaviour is the
+    plain default (verify=True)."""
+    import os
+    import ssl
+
+    import eunoia.ingestion.hackerone as h1
+
+    captured: dict = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def close(self):
+            pass
+
+    # A real CA bundle file: the one this environment already uses.
+    ca_bundle = os.environ.get("SSL_CERT_FILE")
+    assert ca_bundle and os.path.exists(ca_bundle), (
+        "this test needs a real CA bundle file in SSL_CERT_FILE")
+    monkeypatch.setattr(h1.httpx, "Client", FakeClient)
+    monkeypatch.setenv("SSL_CERT_FILE", ca_bundle)
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.delenv("https_proxy", raising=False)
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    monkeypatch.delenv("http_proxy", raising=False)
+    h1._default_client()
+    assert isinstance(captured.get("verify"), ssl.SSLContext)
+    assert captured.get("trust_env") is False
+    captured.clear()
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    h1._default_client()
+    assert "verify" not in captured
+
+
+def test_t7_apply_cached_nvd_backfills_rows_from_cache(
+        session, hackerone_source, http_client):
+    """T7: the nvd_refresh drain fills cve_cache, but the writeup rows
+    never saw the late NVD data (the discovery pipeline ran before
+    NVD had the CVE). apply_cached_nvd closes that gap: a cached
+    record backfills CVSS, severity, and class onto rows that lack
+    them. No HTTP is needed when the cache row is fresh."""
+    from datetime import timedelta
+
+    import respx
+    from httpx import Response
+
+    from eunoia.ingestion.hackerone import apply_cached_nvd
+    from eunoia.ingestion.nvd import NVD_API_URL, TokenBucket
+    from eunoia.models import CveCache
+
+    parsed = parse_hacktivity_item(_item(
+        94265, "CVE-2026-94265: Authorization: Negotiate sent to foreign origin",
+        cwe=None, cve_ids=["CVE-2026-94265"], severity=None,
+        vuln_info="Authorization: Negotiate sent to foreign origin"))
+    job = enqueue_discovery(session, source_id="hackerone", event=parsed)
+    # Ingest with NVD mocked 404 (unknown yet): no CVSS, no CWE, the
+    # row stays unclassified — the exact state apply_cached_nvd must fix.
+    with respx.mock as router:
+        router.get(NVD_API_URL).mock(return_value=Response(404, json={}))
+        assert handle_discovery_job(
+            session, job, client=http_client, limiter=TokenBucket(5, 30),
+            url_checker=lambda url: True) == "created"
+    vuln = session.query(WriteupVuln).one()
+    assert vuln.vuln_class == "unclassified"  # no NVD data at ingest
+    assert vuln.cvss_score is None
+    now = datetime.now(timezone.utc)
+    session.add(CveCache(
+        cve_id="CVE-2026-94265", cvss_score=9.1,
+        cvss_vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H",
+        cwe_ids=["CWE-200"], fetched_at=now,
+        expires_at=now + timedelta(days=1)))
+    session.commit()
+    checked, updated = apply_cached_nvd(session)
+    assert checked >= 1
+    assert updated["cvss"] >= 1
+    assert updated["severity"] >= 1
+    assert updated["class"] >= 1
+    session.refresh(vuln)
+    assert float(vuln.cvss_score) == 9.1
+    assert vuln.severity == "critical"
+    assert vuln.severity_source == "nvd"
+    assert vuln.vuln_class == "Info Disclosure"
+
+
+def test_t7_apply_cached_nvd_leaves_rows_without_nvd_data(
+        session, hackerone_source, http_client):
+    """No cache row and no NVD fetch (client=None would go live, so
+    the function must not fetch when there is nothing cached and no
+    client is given): the row stays exactly as ingested."""
+    import respx
+    from httpx import Response
+
+    from eunoia.ingestion.hackerone import apply_cached_nvd
+    from eunoia.ingestion.nvd import NVD_API_URL, TokenBucket
+
+    parsed = parse_hacktivity_item(_item(
+        111950, "CVE-2026-111950: TLS session cache diff scheme reuse",
+        cwe=None, cve_ids=["CVE-2026-111950"], severity=None,
+        vuln_info="TLS session cache diff scheme reuse"))
+    job = enqueue_discovery(session, source_id="hackerone", event=parsed)
+    with respx.mock as router:
+        router.get(NVD_API_URL).mock(return_value=Response(404, json={}))
+        assert handle_discovery_job(
+            session, job, client=http_client, limiter=TokenBucket(5, 30),
+            url_checker=lambda url: True) == "created"
+    checked, updated = apply_cached_nvd(session, client=None)
+    assert checked >= 1
+    assert updated == {"cvss": 0, "severity": 0, "class": 0}
+    vuln = session.query(WriteupVuln).one()
+    assert vuln.vuln_class == "unclassified"
+    assert vuln.cvss_score is None

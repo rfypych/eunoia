@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from eunoia.config import get_settings
 from eunoia.db import get_engine
-from eunoia.enrich import CACHE_TTL, CveRecord, enrich_cve
+from eunoia.enrich import CACHE_TTL, CveRecord, cvss_to_severity, enrich_cve
 from eunoia.ingestion.kev import KEV_URL, fetch_kev, sync_kev
 from eunoia.ingestion.nvd import (
     EPSS_API_URL,
@@ -477,3 +477,23 @@ def test_enrich_cve_with_caller_session_does_not_commit(
         enrich_cve(CVE_ID, session=session, client=http_client, limiter=limiter)
     assert session.in_transaction() is True
     assert session.get(CveCache, CVE_ID) is not None
+
+
+# --- T7: CVSS -> severity bands (NVD qualitative ratings) -------------------
+# Used by the ingestion pipeline to backfill a severity only when the
+# HackerOne row has none: a CVSS score is measured data, not a guess.
+# Bands are NVD's own: 0.0 None, 0.1-3.9 Low, 4.0-6.9 Medium,
+# 7.0-8.9 High, 9.0-10.0 Critical.
+
+def test_t7_cvss_to_severity_bands():
+    assert cvss_to_severity(None) is None
+    assert cvss_to_severity(0.0) == "none"
+    assert cvss_to_severity(0.1) == "low"
+    assert cvss_to_severity(3.9) == "low"
+    assert cvss_to_severity(4.0) == "medium"
+    assert cvss_to_severity(6.9) == "medium"
+    assert cvss_to_severity(7.0) == "high"
+    assert cvss_to_severity(8.9) == "high"
+    assert cvss_to_severity(9.0) == "critical"
+    assert cvss_to_severity(9.8) == "critical"
+    assert cvss_to_severity(10.0) == "critical"

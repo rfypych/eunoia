@@ -40,6 +40,28 @@ Versioning.
   size from `/v1/status`, and links to the API docs, `llms.txt`, MCP,
   and GitHub. The page says the `eunoia-agents` package is not on
   PyPI yet and never claims 500 writeups.
+- Corpus grown to 507 real HackerOne writeups (was 50): a backfill
+  script (`scripts/backfill_hackerone.py`) walks Hacktivity pages
+  newest-first through the normal discovery pipeline; the Hacktivity
+  API returns 50 items on page 1 and 10 per page after that, so 47
+  pages cover 500 items. Unclassified rows fell from 20 of 50 to 45
+  of 507 (8.9%) through three changes: new CWE-to-class mappings
+  for CWEs NVD actually returns (CWE-261/297/305 → Auth Bypass,
+  CWE-312 → Info Disclosure, CWE-667 → DoS, CWE-1021 →
+  Clickjacking), an explicit technique-name text fallback for rows
+  with no CWE (measured: it classifies 96 of the 145 rows that had
+  no CWE), and an NVD re-apply step (`apply_cached_nvd`) that
+  backfills CVSS/severity/class onto rows whose CVE NVD had not
+  published yet at ingest time. Recall re-measured with the same
+  method on the 507-writeup corpus: recall@10 0.9048 (pre-test
+  1.00, mid-test 0.714), p50 46.89 ms, p95 78.45 ms — see
+  `docs/reports/corpus-500.md` for the misses, the scope finding
+  (0 of the 100 newest disclosed reports mention Java/Spring), and
+  the verified CVE-2026-110288. The recall query set
+  (`docs/golden/real-queries-500.json`, 21 queries) is built by
+  `scripts/build_real_queries.py` and validated before measuring;
+  expected ids are database UUIDs, so the set is rebuilt on the
+  database being measured.
 
 ### Pending operator decisions
 

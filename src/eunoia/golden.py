@@ -54,10 +54,13 @@ __all__ = [
     "load_corpus",
     "load_expected",
     "load_queries",
+    "load_real_queries",
     "measure_recall",
+    "measure_real_recall",
     "print_report",
     "report_to_dict",
     "seed_golden_corpus",
+    "validate_real_queries",
 ]
 
 GOLDEN_DIR = Path(__file__).resolve().parents[2] / "docs" / "golden"
@@ -108,6 +111,50 @@ def load_corpus() -> dict:
 
 def load_queries() -> list[dict]:
     return json.loads((GOLDEN_DIR / "queries.json").read_text())
+
+
+def load_real_queries(path: Path | str | None = None) -> list[dict]:
+    """Load the real-corpus queries (``docs/golden/real-queries-500.json``).
+
+    The file is data built from the live corpus, not a fixture: every
+    expected id must exist, be active, and be servable — checked by
+    :func:`validate_real_queries` before any measurement is trusted.
+    """
+    target = Path(path) if path is not None else (
+        GOLDEN_DIR / "real-queries-500.json")
+    return json.loads(target.read_text())
+
+
+def validate_real_queries(
+    queries: list[dict], session: Session
+) -> list[str]:
+    """Check every expected id in ``queries`` against the DB.
+
+    Returns a list of error strings (empty = valid): an expected id
+    must exist, be ``active``, and be servable — servable means the
+    same thing the serving gate means (``quality_passed is not
+    False``; a NULL value is servable, a False value is quarantined).
+    A measurement built on a missing or quarantined id would report
+    a recall the corpus cannot deliver, so validation runs before
+    measuring, never after.
+    """
+    errors: list[str] = []
+    for q in queries:
+        for wid in q.get("expected_writeup_ids") or []:
+            try:
+                row_id = uuid.UUID(wid.removeprefix("w_"))
+            except (ValueError, AttributeError):
+                errors.append(f"{q.get('id')}: bad writeup id {wid!r}")
+                continue
+            row = session.get(Writeup, row_id)
+            if row is None:
+                errors.append(f"{q.get('id')}: missing writeup {wid}")
+            elif row.status != "active" or row.quality_passed is False:
+                errors.append(
+                    f"{q.get('id')}: writeup {wid} is not servable "
+                    f"(status={row.status}, "
+                    f"quality_passed={row.quality_passed})")
+    return errors
 
 
 def load_expected() -> dict[str, list[str]]:
@@ -250,6 +297,55 @@ def _mode_summary(rows: list[PerQueryResult]) -> dict:
     }
 
 
+def _run_queries(
+    session: Session, model, qs: list[dict], limit: int
+) -> list[PerQueryResult]:
+    """Run one query set through :func:`eunoia.search.search` once per
+    query (warm-up first, untimed) and score recall@``limit``."""
+    per_query: list[PerQueryResult] = []
+    if qs:
+        search(qs[0], limit=limit, session=session, model=model)
+    for q in qs:
+        expected = list(q.get("expected_writeup_ids") or [])
+        t0 = time.perf_counter()
+        results = search(q, limit=limit, session=session, model=model)
+        latency_ms = (time.perf_counter() - t0) * 1000.0
+        returned = [r.writeup_id for r in results]
+        found = [wid for wid in expected if wid in returned]
+        missing = [wid for wid in expected if wid not in returned]
+        recall = len(found) / len(expected) if expected else 1.0
+        per_query.append(PerQueryResult(
+            query_id=q["id"],
+            mode=str(q.get("mode") or "pre_test"),
+            recall=round(recall, 4),
+            latency_ms=round(latency_ms, 2),
+            expected_ids=expected,
+            returned_ids=returned,
+            found_ids=found,
+            missing_ids=missing,
+        ))
+    return per_query
+
+
+def _summarize(per_query: list[PerQueryResult], corpus_size: int) -> Report:
+    latencies = [r.latency_ms for r in per_query]
+    return Report(
+        recall_at_10=round(
+            sum(r.recall for r in per_query) / len(per_query), 4
+        ) if per_query else 0.0,
+        p50_ms=round(_percentile(latencies, 50), 2),
+        p95_ms=round(_percentile(latencies, 95), 2),
+        per_query=per_query,
+        pre_test=_mode_summary(
+            [r for r in per_query if r.mode == "pre_test"]),
+        mid_test=_mode_summary(
+            [r for r in per_query if r.mode == "mid_test"]),
+        measured_at=datetime.now(timezone.utc).isoformat(),
+        corpus_size=corpus_size,
+        notes=[STACK_MATCH_NOTE, NO_THRESHOLD_NOTE],
+    )
+
+
 def measure_recall(
     session: Session | None = None,
     model=None,
@@ -269,30 +365,7 @@ def measure_recall(
     assert session is not None
     try:
         qs = queries if queries is not None else load_queries()
-        # Warm-up (untimed): loads the model and warms caches.
-        if qs:
-            search(qs[0], limit=limit, session=session, model=model)
-        per_query: list[PerQueryResult] = []
-        for q in qs:
-            expected = list(q.get("expected_writeup_ids") or [])
-            t0 = time.perf_counter()
-            results = search(q, limit=limit, session=session, model=model)
-            latency_ms = (time.perf_counter() - t0) * 1000.0
-            returned = [r.writeup_id for r in results]
-            found = [wid for wid in expected if wid in returned]
-            missing = [wid for wid in expected if wid not in returned]
-            recall = len(found) / len(expected) if expected else 1.0
-            per_query.append(PerQueryResult(
-                query_id=q["id"],
-                mode=str(q.get("mode") or "pre_test"),
-                recall=round(recall, 4),
-                latency_ms=round(latency_ms, 2),
-                expected_ids=expected,
-                returned_ids=returned,
-                found_ids=found,
-                missing_ids=missing,
-            ))
-        latencies = [r.latency_ms for r in per_query]
+        per_query = _run_queries(session, model, qs, limit)
         # Final review triage, Task 15: count only rows that are
         # actually in corpus.json — the old count included every
         # active writeup in the DB (e.g. rows seeded by other tests).
@@ -302,21 +375,41 @@ def measure_recall(
                 Writeup.id.in_(corpus_ids),
                 Writeup.status == "active")
         ).scalar_one()
-        return Report(
-            recall_at_10=round(
-                sum(r.recall for r in per_query) / len(per_query), 4
-            ) if per_query else 0.0,
-            p50_ms=round(_percentile(latencies, 50), 2),
-            p95_ms=round(_percentile(latencies, 95), 2),
-            per_query=per_query,
-            pre_test=_mode_summary(
-                [r for r in per_query if r.mode == "pre_test"]),
-            mid_test=_mode_summary(
-                [r for r in per_query if r.mode == "mid_test"]),
-            measured_at=datetime.now(timezone.utc).isoformat(),
-            corpus_size=corpus_size,
-            notes=[STACK_MATCH_NOTE, NO_THRESHOLD_NOTE],
-        )
+        return _summarize(per_query, corpus_size)
+    finally:
+        if own_session:
+            session.close()
+
+
+def measure_real_recall(
+    session: Session | None = None,
+    model=None,
+    limit: int = 10,
+    queries: list[dict] | None = None,
+) -> Report:
+    """Measure recall@10 on the REAL corpus (T7, same method as the
+    19 Nov 2026 measurement).
+
+    Same engine as :func:`measure_recall` — one ``search()`` call per
+    query, recall@``limit``, latencies timed, split pre-test /
+    mid-test — but the queries are the real-corpus set (default
+    ``docs/golden/real-queries-500.json``) and ``corpus_size`` is the
+    count of active writeups actually in this DB, not the synthetic
+    fixture. Read-only: no seeding, no writes. Callers validate the
+    queries first with :func:`validate_real_queries`.
+    """
+    own_session = session is None
+    if own_session:
+        session = Session(get_engine(get_settings()))
+    assert session is not None
+    try:
+        qs = queries if queries is not None else load_real_queries()
+        per_query = _run_queries(session, model, qs, limit)
+        corpus_size = session.execute(
+            select(func.count()).select_from(Writeup).where(
+                Writeup.status == "active")
+        ).scalar_one()
+        return _summarize(per_query, corpus_size)
     finally:
         if own_session:
             session.close()
