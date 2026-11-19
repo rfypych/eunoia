@@ -28,7 +28,7 @@ Versioning.
   the operator's identity decision. Verified 2026-11-19 with the
   official Python MCP SDK client: `tools/list` returns the 6 tools and
   `search_writeups` returns real results.
-- Lightweight CLI install (fix T5): the base package has no
+- Lightweight CLI install (fix): the base package has no
   dependencies — the CLI is stdlib-only. Server dependencies moved to
   the `server` extra and the embedding model to the `embed` extra
   (which pulls torch). Cold-cache install measured 2026-11-19: base
@@ -36,18 +36,19 @@ Versioning.
   a base dependency); `.[dev,server]` cold 65 s / 121 MB, no torch.
   The README now leads with the checkout install that works today;
   `pipx install eunoia-agents` is documented as the command after the
-  first PyPI release, which is blocked on the branch being pushed (T2)
-  and on publishing. `eunoia update` now distinguishes "not published
+  first PyPI release, which is blocked on the operator publishing
+  the package. `eunoia update` now distinguishes "not published
   on PyPI yet" (404) from "could not reach PyPI" (network/5xx).
   `eunoia setup` keeps the first backup at `.bak` and timestamps
   later ones instead of overwriting it. `scripts/setup_dev.sh`
   reinstalls the editable package on every re-run so the `eunoia`
   command is present in the dev venv.
-- Website / demo live at the API root (T6): a search box that calls
+- Website / demo live at the API root: a search box that calls
   the live `/v1/search`, a CSRF search on load, the live corpus
   size from `/v1/status`, and links to the API docs, `llms.txt`, MCP,
   and GitHub. The page says the `eunoia-agents` package is not on
-  PyPI yet and never claims 500 writeups.
+  PyPI yet and shows the live corpus size from `/v1/status`, not a
+  hardcoded number.
 - Corpus grown to 507 real HackerOne writeups (was 50): a backfill
   script (`scripts/backfill_hackerone.py`) walks Hacktivity pages
   newest-first through the normal discovery pipeline; the Hacktivity
@@ -70,7 +71,7 @@ Versioning.
   `scripts/build_real_queries.py` and validated before measuring;
   expected ids are database UUIDs, so the set is rebuilt on the
   database being measured.
-- Installable skills (T9): `eunoia skills install` writes the
+- Installable skills: `eunoia skills install` writes the
   registry skill (`writeup-registry`, shipped as package data) plus
   one per-class skill per real vuln class into each detected agent's
   skills directory (Claude Code `~/.claude/skills`, Codex
@@ -84,6 +85,21 @@ Versioning.
   text. A verified pre-test (CSRF, report 3882740) and mid-test (SSRF,
   report 366638) walkthrough is in the README, both verified live
   2026-11-19.
+- Structured documentation: a docs index (`docs/index.md`)
+  mapping every guide, plus new guides for install
+  (`docs/install.md`), CLI (`docs/cli.md`), API (`docs/api.md`),
+  troubleshooting (`docs/troubleshooting.md`), and roadmap
+  (`docs/roadmap.md`). The Definition of Done checklist
+  (`docs/runbooks/dod-checklist.md`) is rewritten for the current
+  standard with measured evidence; the transparency note
+  (`docs/transparency.md`) now states the live numbers (507
+  writeups, recall@10 0.9048). Stale claims are corrected: the
+  PyPI release is blocked on the operator publishing the package
+  (the branch push it was waiting on happened 19 Nov 2026 —
+  remote `main` is 3731a3a and CI is green on it), and the served
+  `llms.txt` scope no longer says Java/Spring-only. No invented
+  contact wording remains in any public doc; the DMCA email is
+  recorded as not yet set, with no fake address printed anywhere.
 - Three showcases with evidence (`docs/showcases.md`, linked from
   the README): pre-test CSRF planning, mid-test blind SQL injection
   (same candidate under both rankings), and install/doctor
@@ -105,11 +121,10 @@ contributor; they need a decision from the project operator:
 - Domain and trademark for the Eunoia name: unchecked.
 - Public package name and publishing identity for the installable
   client: the name `eunoia-agents` is free on PyPI (checked
-  2026-11-19), but the first PyPI release is blocked on the branch
-  being pushed to GitHub (T2) and on the operator publishing it.
-  Until then the T5 acceptance (one-command install from PyPI) is
-  not met; the checkout install (`pip install .`) is the working
-  path and is measured in the README.
+  2026-11-19), but the first PyPI release is blocked on the
+  operator publishing it. Until then the one-command install from
+  PyPI is not met; the checkout install (`pip install .`) is the
+  working path and is measured in the README.
 
 ## [0.1.0] - 2026-11-19
 

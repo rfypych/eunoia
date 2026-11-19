@@ -50,6 +50,7 @@ VERIFIED_ABSOLUTE_URLS = {
     "https://hackerone.com/reports/366638",
     "https://hackerone.com/reports/3882740",
     "http://129.150.57.82:10004/v1/writeups/w_01a1f1a6533177e99904437453565607/skill.md",
+    "http://129.150.57.82:10004/v1/vuln-classes",
 }
 
 _LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
@@ -136,6 +137,7 @@ _ALLOWED_BARE_PATHS = {
     ("hackerone.com", "/reports/3882740"),
     ("hackerone.com", "/reports/366638"),
     ("129.150.57.82:10004", "/v1/writeups/w_01a1f1a6533177e99904437453565607/skill.md"),
+    ("129.150.57.82:10004", "/v1/vuln-classes"),
 }
 
 

@@ -1,14 +1,13 @@
-"""Task T3 (Rea-standard): legal and release-basis files.
+"""Legal and release-basis files.
 
-Pins the T3 acceptance criteria: LICENSE MIT, SECURITY.md,
+Pins the acceptance criteria: LICENSE MIT, SECURITY.md,
 CONTRIBUTING.md and CHANGELOG.md exist; CHANGELOG records release
-0.1.0 and an Unreleased section; the new public docs contain no
-placeholder wording; the takedown policy no longer presents the
-placeholder address as a contact. The literal placeholder address
-is deliberately kept in exactly one designated place — the open-items
-list in docs/transparency.md (also pinned by tests/test_dod.py) —
-because the real DMCA agent email is a pending operator decision,
-not something this task may invent.
+0.1.0 and an Unreleased section; the public docs contain no
+placeholder wording; the takedown policy has no placeholder
+contact. The DMCA agent email is a pending operator decision, not
+something to invent: it is recorded as "not yet set" in the
+transparency note and the takedown policy, and the literal
+placeholder address appears nowhere in the repo's public docs.
 """
 
 from __future__ import annotations
@@ -73,12 +72,13 @@ def test_takedown_policy_has_no_placeholder_contact():
     assert "not yet set" in text.lower()
 
 
-def test_dmca_pending_item_kept_in_designated_list_only():
-    # The designated user-task list: transparency.md open items.
+def test_dmca_pending_item_recorded_without_placeholder_address():
     # The real address must not be invented anywhere, and the
-    # placeholder string must not leak into any other public doc.
+    # placeholder string must not appear in any public doc. The
+    # pending item is recorded as "not yet set".
     transparency = (_REPO / "docs" / "transparency.md").read_text()
-    assert _PLACEHOLDER_EMAIL in transparency
+    assert _PLACEHOLDER_EMAIL not in transparency
+    assert "not yet set" in transparency.lower()
     for path in _CLEAN_DOCS:
         assert _PLACEHOLDER_EMAIL not in path.read_text(), (
             f"{path} presents the placeholder DMCA address")

@@ -50,7 +50,7 @@ After the first PyPI release, the one command will be:
 pipx install eunoia-agents
 ```
 
-That command does not work yet: the package is not on PyPI yet (checked 2026-11-19: the name `eunoia` is taken by another project, so the package is `eunoia-agents`). The first PyPI release is blocked on the branch being pushed to GitHub (T2) and on the package being published — until then, install from a checkout as above.
+That command does not work yet: the package is not on PyPI yet (checked 2026-11-19: the name `eunoia` is taken by another project, so the package is `eunoia-agents`). The first PyPI release is blocked on the package being published — the operator has not published it yet. Until then, install from a checkout as above.
 
 ### Installable skills
 
@@ -130,7 +130,7 @@ Anonymous callers get keyword mode only, limit up to 10 (default 5). Semantic an
 | A class skill | `GET /v1/vuln-classes/{class}/skill.md` | Aggregate of the best verified writeups in that class |
 | What is fresh | `check_freshness()` | Last poll, lag, and source health |
 
-Current scope, measured 2026-11-19: **507 real HackerOne writeups, all disclosed reports (not Java/Spring-only)**, polled every 15 minutes. 45 of the 507 writeups are still unclassified (8.9%).
+Current scope, measured 2026-11-19: **507 real HackerOne writeups, all disclosed reports (not Java/Spring-only)**, polled every 15 minutes. 45 of the 507 writeups were unclassified (8.9%) at that measurement; the live count moves as the poller classifies new reports — the current number is at [vuln-classes](http://129.150.57.82:10004/v1/vuln-classes).
 
 ## What Eunoia does not do
 
@@ -147,7 +147,7 @@ Measured read-only on the live production corpus of 507 writeups, 21 queries, 20
 - **Recall@10: 0.9048** overall (pre-test 1.00, mid-test 0.714). The 2 misses were both mid-test, both 2022 reports with low severity and no CVSS.
 - **Latency: p50 46.89 ms, p95 78.45 ms.**
 - **Cold-cache install (2026-11-19):** `pip install .` in a fresh virtual environment took 4 s, venv 16 MB (base CLI only, stdlib-only; it was 24 min / 5.8 GB when torch was a base dependency). `pip install ".[dev,server]"` cold took 65 s, venv 121 MB, with no torch installed. `eunoia doctor` from the cold base venv: OK (507 writeups active, 6 tools).
-- **Corpus: 507 writeups, 507/507 with embeddings, 45 unclassified (8.9%).**
+- **Corpus: 507 writeups, 507/507 with embeddings, 45 unclassified (8.9%) at measurement time; the live unclassified count is at [vuln-classes](http://129.150.57.82:10004/v1/vuln-classes).**
 - **Source health: HackerOne ok, 0 consecutive failures.** Check the current numbers at [status](http://129.150.57.82:10004/v1/status).
 
 Previous measurement, same date, on the 50-writeup corpus: recall@10 0.90 (pre-test 1.00, mid-test 0.75), p50 20.34 ms, p95 32.66 ms; the 3 misses were all mid-test.
@@ -171,6 +171,13 @@ Tests run against a dedicated `eunoia_test` database, never the dev database. `s
 
 ## Docs
 
+- [Documentation index](docs/index.md) — start here: the full guide map, and the flow install → first query → showcase.
+- [Install](docs/install.md) — checkout install, development setup, and the PyPI status.
+- [CLI](docs/cli.md) — `setup`, `doctor`, `update`, and `skills install`.
+- [API](docs/api.md) — endpoints, auth tiers, limits, and errors.
+- [MCP](docs/mcp.md) — connect an agent over the hosted MCP server.
+- [Troubleshooting](docs/troubleshooting.md) — the failures people actually hit, and the fix for each.
+- [Roadmap](docs/roadmap.md) — what is done, what is still open, and what blocks it.
 - [Showcases](docs/showcases.md) — three real cases with evidence: pre-test CSRF, mid-test SQL injection, and install/doctor end-to-end.
 - [Runbook](docs/runbook.md) — how the service runs, including the worker and supervisord setup.
 - [Transparency](docs/transparency.md) — what is served, what is not, and the open items.
@@ -199,7 +206,7 @@ Only with explicit permission for a target in scope. Eunoia gives hypotheses wit
 Yes, live at http://129.150.57.82:10004/ — a search box that calls `/v1/search`, an example search on load, and links to the API docs, `llms.txt`, and MCP.
 
 **Is there a one-command install?**
-Yes, from a checkout: `pip install .`, then `eunoia setup`. The single PyPI command `pipx install eunoia-agents` will work after the first PyPI release, which is blocked on the branch being pushed and the package being published.
+Yes, from a checkout: `pip install .`, then `eunoia setup`. The single PyPI command `pipx install eunoia-agents` will work after the first PyPI release, which is blocked on the operator publishing the package.
 
 **What is the licence?**
 MIT. See [LICENSE](LICENSE).

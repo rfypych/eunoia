@@ -1,6 +1,6 @@
 # HackerOne Hacktivity auth probe — 2026-11-18 15:06 UTC
 
-**Question (spec §9 Q1):** does the HackerOne Hacktivity REST API work
+**Question:** does the HackerOne Hacktivity REST API work
 without a customer token?
 
 ## Probe
@@ -25,11 +25,11 @@ without a customer token?
 
 - Items returned: `1`; disclosed: `0`.
 - The first item in the default sort is undisclosed (`disclosed: false`,
-  `title: null`). Task 5 must filter/sort for disclosed reports
+  `title: null`). The poller must filter/sort for disclosed reports
   (e.g. sort `-disclosed_at`) instead of taking the default first page
   as-is.
 
-## Decision for Task 5 (poller)
+## Decision for the poller
 
-Outcome `no_auth_ok` is the input to Task 5. The poller must be built on
-the auth mode recorded here, not on an assumption.
+Outcome `no_auth_ok`: the poller is built on the auth mode recorded
+here, not on an assumption.

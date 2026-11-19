@@ -1,8 +1,22 @@
-# T2 — GitHub sync plan (persiapan, belum di-push)
+# GitHub sync plan — outcome recorded 19 Nov 2026
 
-Tanggal verifikasi: 19 Nov 2026, ~18:47 WIB.
-Status: DOKUMEN PERSIAPAN SAJA. Belum ada push, merge, atau release.
-Push butuh persetujuan eksplisit user (lihat "Keputusan yang butuh user").
+Tanggal verifikasi awal: 19 Nov 2026, ~18:47 WIB.
+Status awal: DOKUMEN PERSIAPAN SAJA. Belum ada push, merge, atau release.
+Push butuh persetujuan eksplisit user.
+
+## Outcome (19 Nov 2026, ~20:45 WIB)
+
+Push **berhasil** dari terminal laptop user (bukan lewat connector):
+`git fetch origin` dulu (lease lama dari bundle bikin stale info),
+lalu `git push --force-with-lease origin rea-standard:main`.
+Remote `main` berubah `7d1efbeb` → `3731a3a`, dan CI GitHub pertama
+hijau di commit itu (kedua job: `test` dan `no-db`).
+
+Keadaan sekarang: remote `main` adalah `3731a3a` (19 Nov 2026).
+Branch `rea-standard` lokal sudah lebih baru (HEAD `3568bb4`,
+website/demo, korpus 500, MCP, skills, showcases) dan belum ada
+di `main` remote. Push berikutnya memakai cara yang sama (bundle
+atau push langsung dari laptop) setelah review tiap tugas selesai.
 
 ## Status lokal vs remote (terverifikasi dengan `git ls-remote` + `git fetch`)
 
@@ -10,7 +24,7 @@ Push butuh persetujuan eksplisit user (lihat "Keputusan yang butuh user").
 - Remote `main`: `7d1efbeb` ("Add seed_sources.py + setup_dev_db.sh;
   real-corpus golden set + recall@10 0.90", 19 Nov 2026 15:39 WIB).
 - Lokal `main`: `1c45598` (31 commit).
-- Lokal `rea-standard`: `3f9ba30` (T1, 1 commit di atas `main`).
+- Lokal `rea-standard`: `3f9ba30` (1 commit di atas `main`).
 - Remote TIDAK punya branch `rea-standard`.
 
 ## History: lokal lengkap, remote snapshot (jangan disembunyikan)
@@ -50,14 +64,14 @@ git push origin rea-standard
 - Verifikasi setelah push: `git ls-remote origin rea-standard` harus
   sama dengan `3f9ba30` (atau HEAD `rea-standard` saat itu), dan
   kedua job CI hijau di tab Actions repo.
-- Syarat T1: kalau CI gagal di push pertama ini, T1 dibuka lagi
-  (bukan T2 yang disalahkan).
+- Kalau CI gagal di push pertama ini, tugas setup dev dibuka lagi
+  (bukan sync ini yang disalahkan).
 
 ### Langkah 2 — Samakan `main` remote dengan `main` lokal (BUTUH KEPUTUSAN USER)
 
 Masalah: `git push origin main` biasa akan DITOLAK
 (non-fast-forward, history tidak berhubungan). Satu-satunya cara
-agar acceptance T2 terpenuhi ("remote head sama dengan HEAD lokal")
+agar sync ini terpenuhi ("remote head sama dengan HEAD lokal")
 adalah force-push:
 
 ```bash
@@ -70,7 +84,7 @@ git push --force-with-lease origin main
   / reset. Repo ini milik user sendiri, tidak ada kontributor lain
   yang tercatat; tetap harus diputuskan user, bukan ditebak.
 - Alternatif yang DITOLAK: lanjut pola snapshot (commit baru di atas
-  `7d1efbeb`). Itu menjaga history remote, tapi acceptance T2
+  `7d1efbeb`). Itu menjaga history remote, tapi sync ini
   ("remote head = HEAD lokal") tidak akan pernah terpenuhi dan
   history lokal lengkap tetap tidak naik ke GitHub.
 - Setelah langkah 2, `rea-standard` menjadi branch normal turunan
@@ -81,19 +95,18 @@ git push --force-with-lease origin main
   baru langkah 2 (force-push `main`), lalu buka PR / merge
   `rea-standard` ke `main`.
 
-## Verifikasi akhir T2 (setelah kedua langkah disetujui dan dijalankan)
+## Verifikasi akhir (setelah kedua langkah disetujui dan dijalankan)
 
 ```bash
 git ls-remote origin
-# main harus 1c45598, rea-standard harus 3f9ba30 (atau HEAD saat itu)
-git log --oneline origin/main..main       # harus kosong
-git log --oneline origin/rea-standard..rea-standard  # harus kosong
+# main harus 3731a3a (19 Nov 2026, setelah push dari laptop user)
+git log --oneline origin/main..main       # harus kosong, setelah main lokal disamakan
 ```
 
 ## Keputusan yang butuh user (jangan ditebak)
 
 1. **Setuju force-push `main` (langkah 2)?** Ya / tidak. Kalau tidak,
-   T2 berhenti di langkah 1 dan acceptance T2 ditulis belum terpenuhi
+   berhenti di langkah 1 dan sync ini ditulis belum terpenuhi
    dengan alasan ini.
 2. **Kapan push?** Langkah 1 bisa jalan begitu user bilang gas;
    langkah 2 setelah CI hijau di langkah 1 (atau bersamaan, bila

@@ -22,14 +22,14 @@ never production.
 
 ## Workflow
 
-- Work on a branch from `main`, one task per branch, one commit
-  per task where practical.
+- Work on a branch from `main`, one change per branch, one commit
+  per change where practical.
 - Add or update tests with the change, and keep the
   full suite green (`pytest -q`).
 - Update the docs with the code: if behaviour, an endpoint, or a
   config changes, the matching doc changes in the same commit.
-- Keep changes small and reviewable. A reviewer checks the work
-  against the task brief before it merges.
+- Keep changes small and reviewable. Every change is reviewed
+  before it merges.
 
 ## Rules that are not negotiable
 

@@ -1,4 +1,4 @@
-# Golden set — recall@10 + latency measurement (Task 15, spec §8)
+# Golden set — recall@10 + latency measurement
 
 ## Files
 
@@ -53,13 +53,13 @@ retrieval tokens — far under the 20,000/run cap.
   as measured; the pass bar is decided after this first measurement.
 - **Re-measure on every embedding/ranking change** before shipping
   it: `python scripts/measure_recall.py`.
-- **0.7 stack-match band (Task 9 minor).** The ranking implements
+- **0.7 stack-match band.** The ranking implements
   0.7 whenever the query carries no version ("same product, version
-  not exactly known") — NOT the spec's range-based reading ("same
-  product, version in affected range"), because MVP has no OSV data
+  not exactly known") — NOT the range-based reading ("same
+  product, version in affected range"), because there is no OSV data
   to establish affected ranges. The golden set validates the
   implemented reading (`test_stack_match_07_band_reading`); the
-  range-based reading is untestable in MVP. Versioned queries score
+  range-based reading is untestable here. Versioned queries score
   1.0 on an exact version match (the classifier fills the CPE
   version slot from the version next to the technology mention) and
   0.4 when the writeup names no version.

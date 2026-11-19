@@ -79,9 +79,10 @@ def render_llms_txt(session: Session | None = None) -> str:
     lines = [
         "# Eunoia — Pentest Writeup Registry",
         "",
-        "> Eunoia indexes authorized public bug-bounty writeups for Java "
-        "and Spring targets as metadata plus links, never full text. "
-        "Only test systems you have written authorization to test.",
+        "> Eunoia indexes authorized public bug-bounty writeups — all "
+        "disclosed HackerOne reports — as metadata plus links, never "
+        "full text. Only test systems you have written authorization "
+        "to test.",
         "",
         "## API",
         "",

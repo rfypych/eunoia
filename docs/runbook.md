@@ -1,6 +1,6 @@
 # Eunoia runbook — deployment schedules and recovery
 
-The schedules below are real mechanisms now (Task 16), not prose:
+The schedules below are real mechanisms, not prose:
 `src/eunoia/worker.py` (`run_poll_cycle`, `run_kev_sync_once`),
 `scripts/worker.py` (thin CLI), `deploy/supervisord-eunoia.conf`
 (supervisord unit + the cron line for KEV sync). What
@@ -23,9 +23,10 @@ upgrade head`, then `.venv/bin/python scripts/seed_sources.py`
 .venv/bin/python scripts/worker.py poll-loop --interval-minutes 15
 ```
 
-One cycle calls `poll_hackerone()` (no auth needed — Task 1
-decision: Hacktivity REST works without a token, `no_auth_ok`),
-then drains the jobs queue: repeatedly `claim_next_job(session)`
+One cycle calls `poll_hackerone()` (no auth needed — the Hacktivity
+REST API works without a token; see
+`docs/probes/hackerone-auth-2026-11-18.md`), then drains the jobs
+queue: repeatedly `claim_next_job(session)`
 and `process_job(session, job.id, handler)` until no job is due.
 `dispatch_job` routes by `kind`:
 
@@ -75,7 +76,7 @@ Prints the plaintext key once (it is stored only as a SHA-256 hash
 and can never be recovered). There is deliberately no HTTP admin
 route for provisioning.
 
-## Harness notes (Task 14 minor, recorded)
+## Harness notes
 
 - **The harness is a peer of the MCP server, not a client.**
   `run_loop` calls the search engine directly with the same

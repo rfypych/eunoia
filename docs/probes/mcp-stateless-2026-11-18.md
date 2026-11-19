@@ -1,6 +1,7 @@
 # Probe: MCP stateless revision 2026-07-28
 
-Date: 2026-11-18. Answers spec §9 Q2 (final-product-ready-to-build.md).
+Date: 2026-11-18. Answers: is the 2026-07-28 revision of the Model
+Context Protocol stateless?
 
 ## Verdict
 
@@ -67,12 +68,12 @@ https://kanerika.com/blogs/model-context-protocol/
 - `TransportSecuritySettings(allowed_hosts=[...])` is the
   DNS-rebinding allowlist; deployment must list its own public
   hostname. Default is loopback only.
-- Auth for remote use is the same API-key scheme as REST (spec §5.5).
+- Auth for remote use is the same API-key scheme as REST.
   OAuth 2.1 is NOT implemented: the spec makes it the authorization
   framework for remote servers, but v1 is single-tenant with API
-  keys, and no OAuth server is invented for it (see the plan's
-  Task 11 text). Multi-tenant hosted deployment would need OAuth
-  2.1; that is a post-MVP decision.
+  keys, and no OAuth server is invented for it. Multi-tenant hosted
+  deployment would need OAuth 2.1; that is a later decision, not
+  part of this release.
 
 ## Caveats
 
