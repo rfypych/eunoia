@@ -13,6 +13,13 @@ Versioning.
   CI running the full suite from a clean checkout.
 - Legal and release-basis files: MIT `LICENSE`, `SECURITY.md`,
   `CONTRIBUTING.md`, and this changelog.
+- One-command hosted install: package `eunoia-agents` with the `eunoia`
+  CLI (`setup`, `doctor`, `update`). `eunoia setup` detects Claude
+  Code, Codex and Cursor, shows the planned config change, asks before
+  writing it, and backs up replaced configs. `eunoia doctor` checks the
+  hosted API and MCP server with no local database. The package is not
+  on PyPI yet (the name `eunoia` is taken there); until the first PyPI
+  release, install from a checkout with `pip install .`.
 
 ### Pending operator decisions
 

@@ -30,6 +30,18 @@ Real search output, 2026-11-19:
 
 Live status: [status](http://129.150.57.82:10004/v1/status) · writeups: [writeups](http://129.150.57.82:10004/v1/writeups) · machine-readable index: [llms.txt](http://129.150.57.82:10004/llms.txt) · API schema: [OpenAPI](http://129.150.57.82:10004/api/v1/openapi.json)
 
+## Install (one command)
+
+```bash
+pipx install eunoia-agents
+eunoia setup
+eunoia doctor
+```
+
+`eunoia setup` detects Claude Code, Codex and Cursor, shows the config change, asks before writing it, and backs up any config it replaces. `eunoia doctor` checks the hosted API and MCP server with no local database.
+
+The package is not on PyPI yet (checked 2026-11-19: the name `eunoia` is taken by another project, so the package is `eunoia-agents`). Until the first PyPI release, install from a checkout instead: `pip install .`, then run `.venv/bin/eunoia setup` and `.venv/bin/eunoia doctor` from the checkout's virtual environment.
+
 ## Quick start
 
 ### For an agent: connect over MCP
@@ -96,7 +108,7 @@ Measured read-only on the real production corpus of 50 writeups, 20 queries, 202
 - **Corpus: 50 writeups, 50/50 with embeddings, 0 quarantined rows in the top 10.**
 - **Source health: HackerOne ok, 0 consecutive failures.** Check the current numbers at [status](http://129.150.57.82:10004/v1/status).
 
-Honest limits, same date: recall was measured on a 50-writeup corpus, so it is not a launch-grade number yet. The 7-day poller window started 2026-11-19 02:49 UTC and ends around 2026-11-26. The one-command hosted install and the website/demo are not yet live; until then, use the hosted API and MCP above.
+Honest limits, same date: recall was measured on a 50-writeup corpus, so it is not a launch-grade number yet. The 7-day poller window started 2026-11-19 02:49 UTC and ends around 2026-11-26. The website/demo is not yet live, and the `eunoia-agents` package is not on PyPI yet; the install command above works from a checkout today.
 
 ## Development setup (one command)
 
@@ -142,7 +154,7 @@ Only with explicit permission for a target in scope. Eunoia gives hypotheses wit
 Not yet live. The API root still returns 404; the website/demo is planned work.
 
 **Is there a one-command install?**
-Not yet. The hosted API and MCP above are the way to try it today; a one-command setup is planned work.
+Yes, with a caveat: `pipx install eunoia-agents` is the command, but the package is not on PyPI yet (checked 2026-11-19), so today install from a checkout with `pip install .` and run `eunoia setup`.
 
 **What is the licence?**
 MIT. See [LICENSE](LICENSE).
