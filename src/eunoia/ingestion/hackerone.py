@@ -1,0 +1,762 @@
+"""HackerOne Hacktivity poller + discovery worker (spec §5.3, §5.6).
+
+Auth mode (Task 1 decision, docs/probes/hackerone-auth-2026-11-18.md):
+the Hacktivity REST API works WITHOUT auth (``no_auth_ok``, HTTP 200) —
+no token is sent. The default sort returns undisclosed items (title
+null), so the poller sorts by ``-disclosed_at`` and only enqueues
+disclosed reports.
+
+Poller contract: the poller ONLY enqueues discovery events; it never
+fetches bodies. The worker (``handle_discovery_job``) parses the event,
+runs the 5-layer dedup (Task 4) and upserts — never blind-inserts.
+
+Cursor: ``sources.cursor_state`` holds ``disclosed_at`` /
+``latest_disclosable_activity_at`` (ISO strings, newest seen). The
+Hacktivity API has no verified Lucene filter for ``disclosed_at``, so
+the cursor is applied client-side: pages are fetched newest-first and
+polling stops at the first item at or below the cursor.
+
+429 policy (§5.7): one 429 → back off the host 60s (``SourceHost``) and
+halve the source's per-minute budget — the halved budget is ephemeral
+state (``cursor_state["backoff_rate_limit_per_min"]``), the configured
+``source.rate_limit_per_min`` is never mutated, and the back-off key is
+dropped on the next successful poll; three 429s in one UTC day → the
+host is paused until tomorrow (``HostPausedError``, no HTTP call).
+403 → ``PlanGatedError`` and the source is flagged
+``cursor_state["blocked"] = "plan_gated_403"`` so ``/status`` can show it
+instead of an empty corpus looking like "no writeups exist"; the flag is
+dropped on the next successful poll.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
+from typing import Any
+
+import httpx
+from sqlalchemy import func, or_
+from sqlalchemy.orm import Session
+
+from eunoia.classify import apply_classification, classify_vuln_class
+from eunoia.db import get_engine
+from eunoia.dedup import (
+    content_hash,
+    dedup_decision,
+    normalize_text,
+    simhash64,
+    simhash_to_db,
+    url_hash,
+)
+from eunoia.embed import embed_writeup
+from eunoia.enrich import enrich_cve
+from eunoia.ingestion.jobs import enqueue_discovery, idempotency_key_for
+from eunoia.models import Job, Source, SourceHost, Writeup, WriteupEvent, WriteupSource, WriteupVuln
+from eunoia.safety.quality import detect_language, quality_gate
+
+__all__ = [
+    "HACKTIVITY_URL",
+    "HACKERONE_HOST",
+    "HostPausedError",
+    "PlanGatedError",
+    "PollResult",
+    "RateLimitedError",
+    "handle_discovery_job",
+    "parse_hacktivity_item",
+    "poll_hackerone",
+]
+
+HACKTIVITY_URL = "https://api.hackerone.com/v1/hackers/hacktivity"
+HACKERONE_HOST = "api.hackerone.com"
+PAGE_SIZE_MAX = 100
+MAX_PAGES_PER_RUN = 10
+MAX_429_PER_DAY = 3
+
+_SEVERITIES = {"none", "low", "medium", "high", "critical"}
+# Strongest dedup decision first; used to pick one outcome when several
+# existing rows match a candidate on different layers.
+_DECISION_RANK = {
+    "exact": 0,
+    "external_id": 1,
+    "content": 2,
+    "near_dup_review": 3,
+    "title_candidate": 4,
+    "new": 5,
+}
+_MERGE_DECISIONS = {"exact", "external_id", "content"}
+
+
+class PlanGatedError(RuntimeError):
+    """HackerOne returned 403: API access is not in the plan (spec §9 Q1)."""
+
+
+class RateLimitedError(RuntimeError):
+    """HackerOne returned 429; the host budget was backed off (spec §5.7)."""
+
+
+class HostPausedError(RuntimeError):
+    """Three 429s today: the host is paused until tomorrow (spec §5.7)."""
+
+
+@dataclass(frozen=True)
+class PollResult:
+    discovered: int
+    enqueued: int
+    last_cursor: str | None
+
+
+def _default_client() -> httpx.Client:
+    """Build the poller's HTTP client.
+
+    httpx parses ``NO_PROXY`` into URL patterns at ``Client`` construction
+    and crashes on bracketed IPv6 entries (``[::1]`` → ``Invalid port:
+    ':1]'``) present in this VM's environment — so the proxy URL is read
+    from the environment and passed explicitly with ``trust_env=False``,
+    instead of letting httpx re-parse the environment itself.
+    ``api.hackerone.com`` is public and never in ``NO_PROXY``, so ignoring
+    ``NO_PROXY`` here loses nothing.
+    """
+    proxy = (
+        os.environ.get("HTTPS_PROXY")
+        or os.environ.get("https_proxy")
+        or os.environ.get("HTTP_PROXY")
+        or os.environ.get("http_proxy")
+    )
+    return httpx.Client(timeout=30.0, proxy=proxy or None, trust_env=False)
+
+
+def _default_url_checker(url: str) -> bool:
+    """Production URL check for the quality gate (spec §6.5 (a)).
+
+    HEAD the canonical URL, falling back to GET when the host refuses
+    HEAD (405); True only on HTTP 200. Any transport error is a
+    failure, never a pass. Uses the poller's NO_PROXY-safe client.
+    """
+    try:
+        with _default_client() as client:
+            resp = client.head(url, follow_redirects=True, timeout=10.0)
+            if resp.status_code == 405:
+                resp = client.get(url, follow_redirects=True, timeout=10.0)
+            return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def _slugify(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-") or "unknown"
+
+
+def _cursor(source: Source) -> dict:
+    return dict(source.cursor_state or {})
+
+
+def _is_paused(cursor: dict, today: date) -> bool:
+    return (
+        int(cursor.get("rate_429_count") or 0) >= MAX_429_PER_DAY
+        and cursor.get("rate_429_date") == today.isoformat()
+    )
+
+
+def _record_429(session: Session, source: Source, cursor: dict, today: date) -> dict:
+    """One 429: back off the host 60s, count the day, record a halved budget.
+
+    The halved budget is ephemeral state in ``cursor_state`` only — the
+    configured ``source.rate_limit_per_min`` is never mutated, so a
+    sequence of 429s cannot ratchet it down to 1 permanently. The
+    back-off key is dropped by the success path in ``_poll``.
+    """
+    host = session.get(SourceHost, HACKERONE_HOST)
+    if host is None:
+        host = SourceHost(host=HACKERONE_HOST)
+        session.add(host)
+    host.last_429 = _now()
+    if cursor.get("rate_429_date") == today.isoformat():
+        count = int(cursor.get("rate_429_count") or 0) + 1
+    else:
+        count = 1
+    # JSONB does not track in-place mutation: always reassign the dict.
+    new_cursor = {
+        **cursor,
+        "rate_429_count": count,
+        "rate_429_date": today.isoformat(),
+    }
+    if source.rate_limit_per_min:
+        new_cursor["backoff_rate_limit_per_min"] = max(
+            1, int(source.rate_limit_per_min) // 2
+        )
+    source.cursor_state = new_cursor
+    return new_cursor
+
+
+# ---------------------------------------------------------------------------
+# Parser: Hacktivity item -> JSON-safe discovery event (the parser's job
+# includes boilerplate stripping; Hacktivity attributes are already
+# structured text, so normalizing whitespace is the whole job here).
+# ---------------------------------------------------------------------------
+
+def parse_hacktivity_item(item: dict) -> dict | None:
+    """Extract a disclosed Hacktivity item; None when it must be skipped.
+
+    Skipped: undisclosed items (title/url null) and items without a URL —
+    without a URL there is no canonical_url for the idempotency key.
+    """
+    attrs: dict[str, Any] = item.get("attributes") or {}
+    if not attrs.get("disclosed"):
+        return None
+    canonical_url = attrs.get("url")
+    if not canonical_url:
+        return None
+    title = attrs.get("title") or ""
+    vuln_info = attrs.get("vulnerability_information") or ""
+    excerpt_source = vuln_info or title
+    # Display text keeps its case; only the hash input ("text") is
+    # normalized (lowercased) by normalize_text.
+    excerpt = re.sub(r"\s+", " ", excerpt_source).strip()[:300]
+    bounty = attrs.get("total_awarded_amount")
+    try:
+        # A $0 award is not a verified bounty (final review triage,
+        # Task 5): "verified" requires a positive amount.
+        bounty_verified = bounty is not None and float(bounty) > 0
+    except (TypeError, ValueError):
+        bounty_verified = False
+    team = (item.get("relationships") or {}).get("team") or {}
+    team_attrs = (team.get("data") or {}).get("attributes") or {}
+    reporter = (item.get("relationships") or {}).get("reporter") or {}
+    reporter_attrs = (reporter.get("data") or {}).get("attributes") or {}
+    return {
+        "canonical_url": canonical_url,
+        "external_id": f"hackerone:{item.get('id')}",
+        "title": title,
+        "excerpt": excerpt,
+        "text": normalize_text(f"{title} {vuln_info}"),
+        "disclosed_at": attrs.get("disclosed_at"),
+        "latest_disclosable_activity_at": attrs.get("latest_disclosable_activity_at"),
+        "cwe": attrs.get("cwe"),
+        "cve_ids": attrs.get("cve_ids") or [],
+        "severity": attrs.get("severity_rating"),
+        "bounty_amount": bounty,
+        "bounty_currency": "USD" if bounty is not None else None,
+        # Platform API is the source of the number, so a positive
+        # amount is verified (a $0 award is not).
+        "bounty_verified": bounty_verified,
+        "program": team_attrs.get("name"),
+        "author_name": reporter_attrs.get("name"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Poller
+# ---------------------------------------------------------------------------
+
+def poll_hackerone(
+    source_id: str = "hackerone",
+    session: Session | None = None,
+    *,
+    page_size: int = PAGE_SIZE_MAX,
+    max_pages: int = MAX_PAGES_PER_RUN,
+    client: httpx.Client | None = None,
+) -> PollResult:
+    """Poll Hacktivity newest-first, enqueue disclosed reports as jobs.
+
+    ``session`` is optional: without one, a session is opened on the
+    configured engine and committed at the end of the run.
+    """
+    if session is not None:
+        result = _poll(session, source_id, page_size, max_pages, client)
+        session.commit()
+        return result
+    engine = get_engine()
+    with Session(engine) as owned:
+        result = _poll(owned, source_id, page_size, max_pages, client)
+        owned.commit()
+        return result
+
+
+def _poll(
+    session: Session,
+    source_id: str,
+    page_size: int,
+    max_pages: int,
+    client: httpx.Client | None,
+) -> PollResult:
+    source = session.get(Source, source_id)
+    if source is None:
+        raise ValueError(f"source '{source_id}' not found; seed sources first")
+    now = _now()
+    cursor = _cursor(source)
+    if _is_paused(cursor, now.date()):
+        raise HostPausedError(
+            f"{HACKERONE_HOST} paused after {MAX_429_PER_DAY} 429s today; "
+            "retry tomorrow"
+        )
+    # Enforce the 60s host back-off recorded by _record_429: a poll inside
+    # the window raises without issuing any HTTP call.
+    host = session.get(SourceHost, HACKERONE_HOST)
+    if host is not None and host.last_429 is not None:
+        last_429 = host.last_429
+        if last_429.tzinfo is None:
+            last_429 = last_429.replace(tzinfo=timezone.utc)
+        elapsed = (now - last_429).total_seconds()
+        if elapsed < 60:
+            raise RateLimitedError(
+                f"{HACKERONE_HOST} backed off after 429; "
+                f"retry in {60 - elapsed:.0f}s"
+            )
+    cursor_dt = _parse_dt(cursor.get("disclosed_at"))
+    cursor_latest_dt = _parse_dt(cursor.get("latest_disclosable_activity_at"))
+    http = client or _default_client()
+    discovered = 0
+    enqueued = 0
+    newest: str | None = None
+    newest_latest: str | None = None
+    # Oldest disclosed_at processed this run. When the loop ends because
+    # MAX_PAGES_PER_RUN is hit (page cap), the cursor may only advance to
+    # the oldest processed item — advancing to the newest would skip the
+    # unprocessed pages between the oldest and the old cursor.
+    oldest: str | None = None
+    # True when the loop ended by reaching the cursor, a short/empty page
+    # (i.e. the source is exhausted); False when it ended by page cap.
+    completed = False
+    try:
+        for page in range(1, max_pages + 1):
+            response = http.get(
+                HACKTIVITY_URL,
+                params={
+                    "sort": "-disclosed_at",
+                    "page[size]": min(page_size, PAGE_SIZE_MAX),
+                    "page[number]": page,
+                },
+            )
+            if response.status_code == 403:
+                source.consecutive_failures = int(source.consecutive_failures or 0) + 1
+                source.last_poll_at = now
+                source.cursor_state = {**cursor, "blocked": "plan_gated_403"}
+                session.commit()
+                raise PlanGatedError(
+                    "HackerOne Hacktivity returned 403: API access is not "
+                    "included in the current plan"
+                )
+            if response.status_code == 429:
+                _record_429(session, source, cursor, now.date())
+                source.consecutive_failures = int(source.consecutive_failures or 0) + 1
+                source.last_poll_at = now
+                session.commit()
+                retry_after = response.headers.get("Retry-After")
+                raise RateLimitedError(
+                    "HackerOne Hacktivity returned 429; host backed off 60s "
+                    f"and budget halved (Retry-After: {retry_after})"
+                )
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError:
+                source.consecutive_failures = int(source.consecutive_failures or 0) + 1
+                source.last_poll_at = now
+                session.commit()
+                raise
+            items = response.json().get("data") or []
+            if not items:
+                completed = True
+                break
+            stop = False
+            for item in items:
+                parsed = parse_hacktivity_item(item)
+                if parsed is None:
+                    continue
+                disclosed_dt = _parse_dt(parsed["disclosed_at"])
+                if cursor_dt is not None and disclosed_dt is not None and disclosed_dt <= cursor_dt:
+                    stop = True
+                    break
+                discovered += 1
+                key = idempotency_key_for(source_id, parsed)
+                is_new = (
+                    session.query(Job.id).filter_by(idempotency_key=key).first() is None
+                )
+                enqueue_discovery(session, source_id=source_id, event=parsed)
+                if is_new:
+                    enqueued += 1
+                if parsed["disclosed_at"] and (
+                    newest is None or _parse_dt(parsed["disclosed_at"]) > _parse_dt(newest)
+                ):
+                    newest = parsed["disclosed_at"]
+                if parsed["disclosed_at"] and (
+                    oldest is None or _parse_dt(parsed["disclosed_at"]) < _parse_dt(oldest)
+                ):
+                    oldest = parsed["disclosed_at"]
+                latest = parsed.get("latest_disclosable_activity_at")
+                if latest and (
+                    newest_latest is None or _parse_dt(latest) > _parse_dt(newest_latest)
+                ):
+                    newest_latest = latest
+            if stop or len(items) < min(page_size, PAGE_SIZE_MAX):
+                completed = True
+                break
+    finally:
+        if client is None:
+            http.close()
+    new_cursor = dict(cursor)
+    # A later success clears the transient flags written by earlier
+    # failures: the plan-gated block and the ephemeral halved budget.
+    new_cursor.pop("blocked", None)
+    new_cursor.pop("backoff_rate_limit_per_min", None)
+    # Page cap: only the oldest processed item is a safe cursor — pages
+    # beyond the cap (older than `oldest`, newer than the old cursor)
+    # have not been seen yet. Otherwise the newest item is safe.
+    cursor_target = oldest if not completed else newest
+    if cursor_target and (cursor_dt is None or _parse_dt(cursor_target) > cursor_dt):
+        new_cursor["disclosed_at"] = cursor_target
+    if newest_latest and (
+        cursor_latest_dt is None or _parse_dt(newest_latest) > cursor_latest_dt
+    ):
+        new_cursor["latest_disclosable_activity_at"] = newest_latest
+    source.cursor_state = new_cursor
+    source.last_poll_at = now
+    source.last_success_at = now
+    source.consecutive_failures = 0
+    session.flush()
+    return PollResult(
+        discovered=discovered,
+        enqueued=enqueued,
+        last_cursor=cursor_target or cursor.get("disclosed_at"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Worker: discovery job -> upserted Writeup (never blind-insert)
+# ---------------------------------------------------------------------------
+
+def _upsert_merge_vulns(session: Session, writeup: Writeup,
+                        payload: dict) -> list[str]:
+    """Upsert vuln rows for CVE/CWE values a mirror payload carries
+    that the first source lacked (final review I4).
+
+    The merge path used to update only ``last_seen_at`` and the source
+    URL, so a mirror carrying a CVE the first source lacked never got
+    a vuln row, was never enriched, never KEV-flagged, never ranked
+    on. Returns the list of newly added CVE ids; the caller runs the
+    enrichment pipeline afterwards, which enriches every vuln row's
+    CVE — including these new ones.
+    """
+    rows = session.query(WriteupVuln).filter_by(
+        writeup_id=writeup.id).all()
+    have_cves = {row.cve_id for row in rows if row.cve_id}
+    have_cwes = {row.cwe_id for row in rows if row.cwe_id}
+    severity = payload.get("severity")
+    cwe = payload.get("cwe")
+    program = payload.get("program")
+    added: list[str] = []
+    for cve_id in payload.get("cve_ids") or []:
+        if cve_id and cve_id not in have_cves:
+            session.add(WriteupVuln(
+                writeup_id=writeup.id,
+                vuln_class=classify_vuln_class([cwe]) if cwe else None,
+                cwe_id=cwe,
+                cve_id=cve_id,
+                severity=severity if severity in _SEVERITIES else None,
+                severity_source="hackerone" if severity in _SEVERITIES else None,
+                bounty_amount=payload.get("bounty_amount"),
+                bounty_currency=payload.get("bounty_currency"),
+                bounty_verified=bool(payload.get("bounty_verified")),
+                verified_against="hackerone" if payload.get("bounty_verified") else None,
+                program=program,
+                program_slug=_slugify(program) if program else None,
+            ))
+            have_cves.add(cve_id)
+            added.append(cve_id)
+    if cwe and cwe not in have_cwes and not added:
+        # No new CVE row was added, so nothing in this merge carries
+        # the payload's CWE yet: surface it as a CWE-only row. (When
+        # CVE rows WERE added above they already carry this CWE, so a
+        # second row would duplicate it. The old condition was
+        # `not rows`, which missed a new CWE on a writeup that already
+        # had vuln rows from the first source.)
+        session.add(WriteupVuln(
+            writeup_id=writeup.id,
+            vuln_class=classify_vuln_class([cwe]),
+            cwe_id=cwe,
+            cve_id=None,
+            severity=severity if severity in _SEVERITIES else None,
+            severity_source="hackerone" if severity in _SEVERITIES else None,
+            bounty_amount=payload.get("bounty_amount"),
+            bounty_currency=payload.get("bounty_currency"),
+            bounty_verified=bool(payload.get("bounty_verified")),
+            verified_against="hackerone" if payload.get("bounty_verified") else None,
+            program=program,
+            program_slug=_slugify(program) if program else None,
+        ))
+    return added
+
+
+def handle_discovery_job(
+    session: Session,
+    job: Job,
+    *,
+    model=None,
+    client: httpx.Client | None = None,
+    limiter=None,
+    url_checker=None,
+) -> str:
+    """Process one discovery job; returns ``"created"`` or ``"merged"``.
+
+    Upsert first (dedup, never blind-insert), then the enrichment
+    pipeline (Task 6 classify → Task 16 quality gate → Task 7 enrich
+    → Task 8 embed) on the upserted writeup, for both the create and
+    the merge path. ``model`` is an injectable encoder for tests;
+    without one the production model is loaded once and reused
+    (``embed.get_model``). ``client`` / ``limiter`` are forwarded to
+    NVD enrichment (tests inject a mocked HTTP client).
+    ``url_checker`` is the quality gate's URL probe; without one the
+    production HEAD/GET check (``_default_url_checker``) runs — tests
+    must inject a stub, or the worker would do live HTTP. The
+    pipeline never fails the job: a step that raises is recorded in
+    the event detail (``pipeline_errors``) and the job still
+    completes — a downstream bug must not dead-letter a discovery
+    job.
+    """
+    payload: dict[str, Any] = dict(job.payload or {})
+    canonical_url = payload["canonical_url"]
+    text = payload.get("text") or f"{payload.get('title', '')} {payload.get('excerpt', '')}"
+    candidate = {
+        "canonical_url": canonical_url,
+        "external_id": payload.get("external_id"),
+        "title": payload.get("title"),
+        "author_name": payload.get("author_name"),
+        "disclosed_at": payload.get("disclosed_at"),
+        "content_hash": content_hash(text),
+        "simhash": simhash64(text),
+    }
+    existing = _find_existing(session, candidate)
+    decision = "new"
+    matched: Writeup | None = None
+    for row in existing:
+        d = dedup_decision(row, candidate)
+        if _DECISION_RANK[d] < _DECISION_RANK[decision]:
+            decision, matched = d, row
+    now = _now()
+    if matched is not None and decision in _MERGE_DECISIONS:
+        matched.last_seen_at = now
+        _add_source_url(session, matched.id, job.source_id, canonical_url)
+        _upsert_merge_vulns(session, matched, payload)
+        writeup, outcome = matched, "merged"
+        detail: dict[str, Any] = {"dedup": decision, "merged_source_url": canonical_url}
+    else:
+        disclosed_at = _parse_dt(payload.get("disclosed_at"))
+        writeup = Writeup(
+            canonical_url=canonical_url,
+            url_hash=url_hash(canonical_url),
+            external_id=payload.get("external_id"),
+            title=payload.get("title") or "",
+            excerpt=(payload.get("excerpt") or "")[:300],
+            author_name=payload.get("author_name"),
+            source_id=job.source_id,
+            source_type="hackerone_report",
+            published_at=disclosed_at,
+            disclosed_at=disclosed_at,
+            fetched_at=now,
+            last_seen_at=now,
+            content_hash=candidate["content_hash"],
+            simhash=simhash_to_db(candidate["simhash"]),
+            # Final review I3: detect the language from title/excerpt
+            # instead of hardcoding "en" — the quality gate only
+            # detects when the stored value is None, so a hardcoded
+            # "en" made detect_language dead in the production path
+            # and let non-English reports enter ranking as English.
+            # detect_language returns None when it cannot tell; the
+            # gate then treats the record as needing review, and the
+            # search filter keeps language NULL rows retrievable.
+            language=detect_language(
+                payload.get("title") or "",
+                payload.get("excerpt") or "",
+            ),
+            status="active",
+        )
+        session.add(writeup)
+        session.flush()
+        _add_source_url(session, writeup.id, job.source_id, canonical_url)
+        severity = payload.get("severity")
+        cve_ids = payload.get("cve_ids") or []
+        if payload.get("cwe") or cve_ids or severity or payload.get("bounty_amount") is not None:
+            program = payload.get("program")
+            session.add(WriteupVuln(
+                writeup_id=writeup.id,
+                vuln_class=None,  # Task 6 classification assigns this
+                cwe_id=payload.get("cwe"),
+                cve_id=cve_ids[0] if cve_ids else None,
+                severity=severity if severity in _SEVERITIES else None,
+                severity_source="hackerone" if severity in _SEVERITIES else None,
+                bounty_amount=payload.get("bounty_amount"),
+                bounty_currency=payload.get("bounty_currency"),
+                bounty_verified=bool(payload.get("bounty_verified")),
+                verified_against="hackerone" if payload.get("bounty_verified") else None,
+                program=program,
+                program_slug=_slugify(program) if program else None,
+            ))
+        outcome = "created"
+        detail = {"dedup": decision, "source": "hackerone"}
+        if matched is not None and decision in ("near_dup_review", "title_candidate"):
+            detail["candidate_of"] = matched.api_id
+    detail.update(_run_enrichment_pipeline(
+        session, writeup, model=model, client=client, limiter=limiter,
+        url_checker=url_checker,
+    ))
+    session.add(WriteupEvent(
+        writeup_id=writeup.id,
+        event="updated" if outcome == "merged" else "created",
+        actor="hackerone-poller",
+        detail=detail,
+    ))
+    session.flush()
+    return outcome
+
+
+def _run_enrichment_pipeline(
+    session: Session,
+    writeup: Writeup,
+    *,
+    model=None,
+    client: httpx.Client | None = None,
+    limiter=None,
+    url_checker=None,
+) -> dict[str, Any]:
+    """Classify → quality gate → enrich CVEs → embed one upserted writeup (R6 wiring + Task 16).
+
+    Returns the pipeline detail recorded on the writeup's event:
+    ``vuln_class``, ``quality_gate`` (``passed`` / ``needs_review`` /
+    ``checks``), ``cves_enriched``, ``embed`` (``"embedded"`` /
+    ``"skipped"`` / ``"failed"``) and ``pipeline_errors``. Every step
+    is best-effort: a step that raises is recorded and the pipeline
+    continues, so the discovery job still completes. Idempotent:
+    classification fills a null class only, enrichment is cached
+    (1-day TTL), and embedding skips when the template hash is
+    unchanged — re-running the worker duplicates nothing.
+
+    The quality gate runs after classification (it needs the mapped
+    class) and sets ``writeup.quality_passed``. A hard failure does
+    NOT stop the pipeline — the record is kept with full data for
+    human review, but the shared serving gate hides it until a human
+    clears it (``quality_passed=True``).
+    """
+    errors: list[str] = []
+    vuln_class: str | None = None
+    try:
+        # Final review I5: each step runs inside a SAVEPOINT, so a DB
+        # error in one step rolls back only that step — the session
+        # stays usable for the later steps instead of failing every
+        # subsequent flush with PendingRollbackError.
+        with session.begin_nested():
+            vuln_row = apply_classification(session, writeup)
+        vuln_class = vuln_row.vuln_class
+    except Exception as exc:
+        errors.append(f"classification: {exc}")
+    gate_detail: dict[str, Any] | None = None
+    try:
+        gate = quality_gate(
+            canonical_url=writeup.canonical_url,
+            title=writeup.title,
+            author_name=writeup.author_name,
+            published_at=writeup.published_at or writeup.disclosed_at,
+            vuln_class=vuln_class,
+            excerpt=writeup.excerpt,
+            language=writeup.language,
+            url_checker=(
+                url_checker if url_checker is not None
+                else _default_url_checker
+            ),
+        )
+        writeup.quality_passed = gate.passed
+        gate_detail = {
+            "passed": gate.passed,
+            "needs_review": gate.needs_review,
+            "checks": dict(gate.checks),
+        }
+    except Exception as exc:
+        errors.append(f"quality_gate: {exc}")
+    enriched: list[str] = []
+    cve_ids: list[str] = []
+    for row in session.query(WriteupVuln).filter_by(writeup_id=writeup.id).all():
+        if row.cve_id and row.cve_id not in cve_ids:
+            cve_ids.append(row.cve_id)
+    for cve_id in cve_ids:
+        try:
+            with session.begin_nested():
+                enrich_cve(cve_id, session=session, client=client, limiter=limiter)
+            enriched.append(cve_id)
+        except Exception as exc:
+            errors.append(f"enrich {cve_id}: {exc}")
+    try:
+        with session.begin_nested():
+            embed_result = embed_writeup(writeup.id, session=session, model=model)
+    except Exception as exc:
+        embed_result = "failed"
+        errors.append(f"embed: {exc}")
+    return {
+        "vuln_class": vuln_class,
+        "quality_gate": gate_detail,
+        "cves_enriched": enriched,
+        "embed": embed_result,
+        "pipeline_errors": errors,
+    }
+
+
+_CANDIDATE_LIMIT = 200
+
+
+def _find_existing(session: Session, candidate: dict) -> list[Writeup]:
+    """Rows matching the candidate on any of dedup layers 1–5.
+
+    Layers 1–3 (exact URL hash / external id / content hash) and the
+    layer-5 signals (same normalized title, same author) are filtered in
+    SQL. Layer 4 (SimHash) cannot be filtered in SQL — Hamming distance
+    is not a SQL predicate here — so a bounded set of the most recent
+    rows carrying a SimHash is fetched and scored in Python by
+    ``dedup_decision``. The set is bounded (``_CANDIDATE_LIMIT``) so a
+    large corpus cannot blow up one worker call; rows that score
+    ``"new"`` are harmless — the caller keeps the strongest decision.
+    """
+    clauses = [Writeup.url_hash == url_hash(candidate["canonical_url"])]
+    if candidate.get("external_id"):
+        clauses.append(Writeup.external_id == candidate["external_id"])
+    if candidate.get("content_hash"):
+        clauses.append(Writeup.content_hash == candidate["content_hash"])
+    title = normalize_text(str(candidate.get("title") or ""))
+    if title:
+        clauses.append(func.lower(Writeup.title) == title)
+    author = normalize_text(str(candidate.get("author_name") or ""))
+    if author:
+        clauses.append(func.lower(Writeup.author_name) == author)
+    matched = session.query(Writeup).filter(or_(*clauses)).all()
+    recent = (
+        session.query(Writeup)
+        .filter(Writeup.simhash.is_not(None))
+        .order_by(Writeup.fetched_at.desc().nulls_last())
+        .limit(_CANDIDATE_LIMIT)
+        .all()
+    )
+    seen = {row.id for row in matched}
+    return matched + [row for row in recent if row.id not in seen]
+
+
+def _add_source_url(
+    session: Session, writeup_id: Any, source_id: str | None, source_url: str
+) -> None:
+    exists = (
+        session.query(WriteupSource.id)
+        .filter_by(writeup_id=writeup_id, source_url=source_url)
+        .first()
+    )
+    if exists is None:
+        session.add(WriteupSource(
+            writeup_id=writeup_id, source_id=source_id, source_url=source_url
+        ))
+        session.flush()

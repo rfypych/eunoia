@@ -1,0 +1,602 @@
+[
+  {
+    "id": "q01",
+    "mode": "pre_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "vuln_class": "SSRF",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000001",
+      "w_019a0000000070008000000000000008"
+    ],
+    "notes": "Spring Boot SSRF: both SSRF writeups for the stack."
+  },
+  {
+    "id": "q02",
+    "mode": "pre_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "vuln_class": "XSS",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000002"
+    ],
+    "notes": "Spring Boot stored XSS."
+  },
+  {
+    "id": "q03",
+    "mode": "pre_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "vuln_class": "IDOR",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000003"
+    ],
+    "notes": "Spring Boot IDOR (no CVE attached; retrieval via title/excerpt keywords)."
+  },
+  {
+    "id": "q04",
+    "mode": "pre_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "vuln_class": "SQLi",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000004"
+    ],
+    "notes": "Spring Boot SQL injection."
+  },
+  {
+    "id": "q05",
+    "mode": "pre_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "vuln_class": "Auth Bypass",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000005"
+    ],
+    "notes": "Spring Boot Actuator auth bypass."
+  },
+  {
+    "id": "q06",
+    "mode": "pre_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "vuln_class": "Deserialization",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000006"
+    ],
+    "notes": "Spring Boot deserialization RCE."
+  },
+  {
+    "id": "q07",
+    "mode": "pre_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "vuln_class": "SSTI",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000007"
+    ],
+    "notes": "Spring Boot Thymeleaf SSTI."
+  },
+  {
+    "id": "q08",
+    "mode": "pre_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "vuln_class": "Path Traversal",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000009"
+    ],
+    "notes": "Spring Boot path traversal."
+  },
+  {
+    "id": "q09",
+    "mode": "pre_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "vuln_class": "RCE",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000010"
+    ],
+    "notes": "Spring Boot Spring4Shell RCE."
+  },
+  {
+    "id": "q10",
+    "mode": "pre_test",
+    "tech": [
+      "spring-framework"
+    ],
+    "vuln_class": "RCE",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000011",
+      "w_019a0000000070008000000000000013"
+    ],
+    "notes": "Spring Framework RCE: Spring4Shell + SpEL injection."
+  },
+  {
+    "id": "q11",
+    "mode": "pre_test",
+    "tech": [
+      "spring-framework"
+    ],
+    "vuln_class": "XSS",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000012"
+    ],
+    "notes": "Spring Framework stored XSS."
+  },
+  {
+    "id": "q12",
+    "mode": "pre_test",
+    "tech": [
+      "spring-framework"
+    ],
+    "vuln_class": "SSRF",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000014"
+    ],
+    "notes": "Spring Framework RestTemplate SSRF."
+  },
+  {
+    "id": "q13",
+    "mode": "pre_test",
+    "tech": [
+      "spring-framework"
+    ],
+    "vuln_class": "Auth Bypass",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000015"
+    ],
+    "notes": "Spring Framework broken access control."
+  },
+  {
+    "id": "q14",
+    "mode": "pre_test",
+    "tech": [
+      "tomcat"
+    ],
+    "vuln_class": "Path Traversal",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000016"
+    ],
+    "notes": "Tomcat Ghostcat AJP file read."
+  },
+  {
+    "id": "q15",
+    "mode": "pre_test",
+    "tech": [
+      "tomcat"
+    ],
+    "vuln_class": "Deserialization",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000017"
+    ],
+    "notes": "Tomcat deserialization RCE."
+  },
+  {
+    "id": "q16",
+    "mode": "pre_test",
+    "tech": [
+      "tomcat"
+    ],
+    "vuln_class": "XSS",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000018"
+    ],
+    "notes": "Tomcat error-page XSS."
+  },
+  {
+    "id": "q17",
+    "mode": "pre_test",
+    "tech": [
+      "tomcat"
+    ],
+    "vuln_class": "Auth Bypass",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000019"
+    ],
+    "notes": "Tomcat manager auth bypass."
+  },
+  {
+    "id": "q18",
+    "mode": "pre_test",
+    "tech": [
+      "tomcat"
+    ],
+    "vuln_class": "XXE",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000020"
+    ],
+    "notes": "Tomcat XML parser XXE."
+  },
+  {
+    "id": "q19",
+    "mode": "pre_test",
+    "tech": [
+      "log4j"
+    ],
+    "vuln_class": "RCE",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000021",
+      "w_019a0000000070008000000000000022"
+    ],
+    "notes": "Log4j RCE: Log4Shell + JNDI injection."
+  },
+  {
+    "id": "q20",
+    "mode": "pre_test",
+    "tech": [
+      "log4j"
+    ],
+    "vuln_class": "Deserialization",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000023"
+    ],
+    "notes": "Log4j deserialization gadget chain."
+  },
+  {
+    "id": "q21",
+    "mode": "pre_test",
+    "tech": [
+      "wordpress"
+    ],
+    "vuln_class": "RCE",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000024"
+    ],
+    "notes": "Non-Java control: WordPress plugin RCE must be found for its own stack."
+  },
+  {
+    "id": "q22",
+    "mode": "pre_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "version": "3.2.0",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000001",
+      "w_019a0000000070008000000000000002"
+    ],
+    "notes": "Versioned query: both writeups whose title names Spring Boot 3.2.0."
+  },
+  {
+    "id": "q23",
+    "mode": "pre_test",
+    "tech": [
+      "tomcat"
+    ],
+    "version": "9.0.31",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000016"
+    ],
+    "notes": "Versioned query: Ghostcat names Tomcat 9.0.31."
+  },
+  {
+    "id": "q24",
+    "mode": "pre_test",
+    "tech": [
+      "log4j"
+    ],
+    "version": "2.14.1",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000021"
+    ],
+    "notes": "Versioned query: Log4Shell names Log4j 2.14.1."
+  },
+  {
+    "id": "q25",
+    "mode": "pre_test",
+    "tech": [
+      "spring-framework"
+    ],
+    "version": "5.3.18",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000011"
+    ],
+    "notes": "Versioned query: Spring4Shell writeup names Spring Framework 5.3.18."
+  },
+  {
+    "id": "q26",
+    "mode": "pre_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "cwe": "CWE-918",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000001",
+      "w_019a0000000070008000000000000008"
+    ],
+    "notes": "CWE-918 restricted to Spring Boot."
+  },
+  {
+    "id": "q27",
+    "mode": "pre_test",
+    "cwe": "CWE-918",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000001",
+      "w_019a0000000070008000000000000008",
+      "w_019a0000000070008000000000000014"
+    ],
+    "notes": "CWE-918 across all stacks."
+  },
+  {
+    "id": "q28",
+    "mode": "pre_test",
+    "cwe": "CWE-917",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000010",
+      "w_019a0000000070008000000000000011",
+      "w_019a0000000070008000000000000013",
+      "w_019a0000000070008000000000000021",
+      "w_019a0000000070008000000000000022"
+    ],
+    "notes": "CWE-917 (expression-language injection) across all stacks."
+  },
+  {
+    "id": "q29",
+    "mode": "pre_test",
+    "cwe": "CWE-79",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000002",
+      "w_019a0000000070008000000000000012",
+      "w_019a0000000070008000000000000018"
+    ],
+    "notes": "CWE-79 XSS across all stacks."
+  },
+  {
+    "id": "q30",
+    "mode": "pre_test",
+    "cwe": "CWE-502",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000006",
+      "w_019a0000000070008000000000000017",
+      "w_019a0000000070008000000000000023"
+    ],
+    "notes": "CWE-502 deserialization across all stacks."
+  },
+  {
+    "id": "q31",
+    "mode": "pre_test",
+    "cve": "CVE-2021-44228",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000001",
+      "w_019a0000000070008000000000000021"
+    ],
+    "notes": "Log4Shell CVE: the Spring Boot SSRF report and the Log4j RCE report."
+  },
+  {
+    "id": "q32",
+    "mode": "pre_test",
+    "cve": "CVE-2022-22965",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000010",
+      "w_019a0000000070008000000000000011"
+    ],
+    "notes": "Spring4Shell CVE: both framework writeups."
+  },
+  {
+    "id": "q33",
+    "mode": "pre_test",
+    "cve": "CVE-2020-1938",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000016"
+    ],
+    "notes": "Ghostcat CVE."
+  },
+  {
+    "id": "q34",
+    "mode": "pre_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "endpoint_pattern": "user api",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000003"
+    ],
+    "notes": "Endpoint pattern: user API -> IDOR writeup."
+  },
+  {
+    "id": "q35",
+    "mode": "pre_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "endpoint_pattern": "search",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000004"
+    ],
+    "notes": "Endpoint pattern: search -> SQLi writeup."
+  },
+  {
+    "id": "q36",
+    "mode": "pre_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "endpoint_pattern": "actuator",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000005"
+    ],
+    "notes": "Endpoint pattern: actuator -> auth bypass writeup."
+  },
+  {
+    "id": "q37",
+    "mode": "pre_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "endpoint_pattern": "file download",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000009"
+    ],
+    "notes": "Endpoint pattern: file download -> path traversal writeup."
+  },
+  {
+    "id": "q38",
+    "mode": "pre_test",
+    "tech": [
+      "tomcat"
+    ],
+    "endpoint_pattern": "manager",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000019"
+    ],
+    "notes": "Endpoint pattern: manager -> Tomcat auth bypass writeup."
+  },
+  {
+    "id": "q39",
+    "mode": "pre_test",
+    "tech": [
+      "log4j"
+    ],
+    "endpoint_pattern": "log message",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000022"
+    ],
+    "notes": "Endpoint pattern: log message -> Log4j JNDI injection writeup."
+  },
+  {
+    "id": "q40",
+    "mode": "mid_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "evidence_pattern": "SSRF via PDF parser",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000001"
+    ],
+    "notes": "Mid-test: technique evidence for the PDF-parser SSRF."
+  },
+  {
+    "id": "q41",
+    "mode": "mid_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "evidence_pattern": "remote code execution wordpress plugin",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000024"
+    ],
+    "notes": "Mid-test: stack-zero allowed, WordPress RCE is the technique match."
+  },
+  {
+    "id": "q42",
+    "mode": "mid_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "evidence_pattern": "stored XSS unescaped",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000002",
+      "w_019a0000000070008000000000000012"
+    ],
+    "notes": "Mid-test: stored-XSS technique in both Spring stacks."
+  },
+  {
+    "id": "q43",
+    "mode": "mid_test",
+    "tech": [
+      "tomcat"
+    ],
+    "evidence_pattern": "deserialization remote code execution",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000017"
+    ],
+    "notes": "Mid-test: Tomcat deserialization technique."
+  },
+  {
+    "id": "q44",
+    "mode": "mid_test",
+    "tech": [
+      "log4j"
+    ],
+    "evidence_pattern": "JNDI lookup LDAP remote code execution",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000021",
+      "w_019a0000000070008000000000000022"
+    ],
+    "notes": "Mid-test: Log4j JNDI/LDAP technique, both RCE writeups."
+  },
+  {
+    "id": "q45",
+    "mode": "mid_test",
+    "tech": [
+      "spring-framework"
+    ],
+    "evidence_pattern": "Spring4Shell remote code execution",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000010",
+      "w_019a0000000070008000000000000011",
+      "w_019a0000000070008000000000000013"
+    ],
+    "notes": "Mid-test: Spring4Shell/SpEL technique across Spring stacks."
+  },
+  {
+    "id": "q46",
+    "mode": "mid_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "evidence_pattern": "insecure direct object reference user API",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000003"
+    ],
+    "notes": "Mid-test: IDOR technique evidence."
+  },
+  {
+    "id": "q47",
+    "mode": "mid_test",
+    "tech": [
+      "tomcat"
+    ],
+    "evidence_pattern": "AJP file read Ghostcat",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000016"
+    ],
+    "notes": "Mid-test: Ghostcat technique evidence."
+  },
+  {
+    "id": "q48",
+    "mode": "mid_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "evidence_pattern": "Thymeleaf template injection",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000007"
+    ],
+    "notes": "Mid-test: SSTI technique evidence."
+  },
+  {
+    "id": "q49",
+    "mode": "mid_test",
+    "tech": [
+      "spring-boot"
+    ],
+    "evidence_pattern": "SQL injection search endpoint",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000004"
+    ],
+    "notes": "Mid-test: SQLi technique evidence."
+  },
+  {
+    "id": "q50",
+    "mode": "mid_test",
+    "tech": [
+      "spring-framework"
+    ],
+    "evidence_pattern": "SSRF RestTemplate server side request forgery",
+    "expected_writeup_ids": [
+      "w_019a0000000070008000000000000014"
+    ],
+    "notes": "Mid-test: RestTemplate SSRF technique evidence."
+  }
+]

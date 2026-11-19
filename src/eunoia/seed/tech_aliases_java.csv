@@ -1,0 +1,5 @@
+technology,cpe,ecosystem,package_name,version_pattern
+spring-boot,cpe:2.3:a:vmware:spring_boot:*:*:*:*:*:*:*:*,maven,org.springframework.boot:spring-boot,\d+\.\d+(?:\.\d+)?
+spring-framework,cpe:2.3:a:vmware:spring_framework:*:*:*:*:*:*:*:*,maven,org.springframework:spring-core,\d+\.\d+(?:\.\d+)?
+tomcat,cpe:2.3:a:apache:tomcat:*:*:*:*:*:*:*:*,maven,org.apache.tomcat.embed:tomcat-embed-core,\d+\.\d+(?:\.\d+)?
+log4j,cpe:2.3:a:apache:log4j:*:*:*:*:*:*:*:*,maven,org.apache.logging.log4j:log4j-core,\d+\.\d+(?:\.\d+)?

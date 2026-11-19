@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eunoia"
+version = "0.1.0"
+description = "External brain for autonomous pentesting AI agents. \"Stack in, attack plan out.\""
+requires-python = ">=3.12"
+dependencies = [
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.2",
+    "alembic>=1.13",
+    "pgvector>=0.3",
+    "httpx>=0.28",
+    "sentence-transformers>=3.0",
+    "fastapi>=0.115",
+    "mcp>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "respx>=0.23"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
