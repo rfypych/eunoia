@@ -69,7 +69,7 @@ Point your MCP client at the hosted server (Streamable HTTP, stateless, `POST /m
 }
 ```
 
-MCP endpoint: [mcp](http://129.150.57.82:10005/mcp). The server exposes 6 read-only tools: `search_writeups`, `get_writeup`, `get_writeup_skill`, `list_vuln_classes`, `list_programs`, `check_freshness`, plus 2 resource templates and 1 prompt. Local stdio mode is also available: `python -m eunoia.mcp_server`. Client-specific config files and registry listing are planned work, not done yet.
+MCP endpoint: [mcp](http://129.150.57.82:10005/mcp). The server exposes 6 read-only tools: `search_writeups`, `get_writeup`, `get_writeup_skill`, `list_vuln_classes`, `list_programs`, `check_freshness`, plus 2 resource templates and 1 prompt. Local stdio mode is also available: `python -m eunoia.mcp_server`. Ready-made configs: [mcp.json](mcp.json) (generic), [server.json](server.json) (Official MCP Registry format), per-client files under `clients/` (Claude Code, Codex, Cursor), and a Claude Code plugin under `plugins/claude-code/` — see [docs/mcp.md](docs/mcp.md). The server has not been submitted to the Official MCP Registry yet; submission needs the operator's identity decision.
 
 Example agent prompt:
 

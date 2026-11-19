@@ -20,6 +20,14 @@ Versioning.
   hosted API and MCP server with no local database. The package is not
   on PyPI yet (the name `eunoia` is taken there); until the first PyPI
   release, install from a checkout with `pip install .`.
+- MCP discoverability: `mcp.json`, `server.json` (Official MCP
+  Registry format, namespace `io.github.rfypych/eunoia`), per-client
+  configs for Claude Code, Codex and Cursor under `clients/`, a Claude
+  Code plugin under `plugins/claude-code/`, and `docs/mcp.md`. The
+  server has not been submitted to the registry yet; submission needs
+  the operator's identity decision. Verified 2026-11-19 with the
+  official Python MCP SDK client: `tools/list` returns the 6 tools and
+  `search_writeups` returns real results.
 - Lightweight CLI install (fix T5): the base package has no
   dependencies — the CLI is stdlib-only. Server dependencies moved to
   the `server` extra and the embedding model to the `embed` extra
