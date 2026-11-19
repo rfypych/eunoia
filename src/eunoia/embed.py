@@ -74,7 +74,7 @@ def get_model():
         except ImportError as exc:  # pragma: no cover - missing dep
             raise RuntimeError(
                 "sentence-transformers is not installed; "
-                "run: pip install sentence-transformers"
+                'run: pip install "eunoia-agents[embed]"'
             ) from exc
         _MODEL = SentenceTransformer(MODEL_NAME)
     return _MODEL

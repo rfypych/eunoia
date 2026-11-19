@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import json
 import textwrap
+import tomllib
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -33,6 +35,7 @@ from eunoia.cli import (
     Change,
     apply_changes,
     check_update,
+    check_update_status,
     detect_clients,
     doctor,
     main,
@@ -63,11 +66,42 @@ def test_hosted_urls_are_the_live_box():
     assert HOSTED_MCP_URL == "http://129.150.57.82:10005/mcp"
 
 
+def test_base_install_is_lightweight_no_heavy_deps():
+    # Fix T5/I1: the one-command hosted install must not bundle the
+    # server's heavy dependencies (torch via sentence-transformers was
+    # 24 min / 5.8 GB cold). The CLI is stdlib-only, so the base
+    # install has no dependencies at all.
+    data = tomllib.loads((REPO / "pyproject.toml").read_text())
+    assert data["project"]["dependencies"] == []
+    base = "\n".join(data["project"]["dependencies"])
+    assert "torch" not in base and "sentence-transformers" not in base
+    assert "sqlalchemy" not in base
+
+
+def test_server_and_embed_extras_hold_heavy_deps():
+    # Server deps are opt-in (server extra), embeddings are a
+    # separate opt-in extra (embed) — installing the CLI must not
+    # pull either of them.
+    data = tomllib.loads((REPO / "pyproject.toml").read_text())
+    extras = data["project"]["optional-dependencies"]
+    server = "\n".join(extras["server"])
+    assert "sqlalchemy" in server and "fastapi" in server
+    assert "sentence-transformers" not in server
+    embed = "\n".join(extras["embed"])
+    assert "sentence-transformers" in embed
+
+
 def test_readme_documents_one_command_install():
     body = (REPO / "README.md").read_text()
-    assert "pipx install eunoia-agents" in body
+    # Fix T5/I2: the command that works today (from a checkout) comes
+    # first; `pipx install eunoia-agents` is documented only as the
+    # command after the first PyPI release, not as a working step.
+    assert "pip install ." in body
     assert "eunoia setup" in body
     assert "eunoia doctor" in body
+    assert "pipx install eunoia-agents" in body
+    assert body.index("pip install .") < body.index("pipx install eunoia-agents")
+    assert "not on PyPI yet" in body
 
 
 # --- detection -------------------------------------------------------------
@@ -188,6 +222,28 @@ def test_apply_backs_up_overwritten_config(tmp_path):
     assert json.loads(backup.read_text())["mcpServers"]["eunoia"]["url"] == (
         "http://old:1234/mcp"
     )
+
+
+def test_apply_keeps_first_backup_and_timestamps_later_ones(tmp_path):
+    # Fix T5/M4: a second setup must not silently overwrite the first
+    # backup. The first backup stays at `.bak`; later ones are
+    # timestamped so no earlier config is lost.
+    home = _fake_home(tmp_path, "claude")
+    first_before = (home / ".claude.json").read_text()
+    apply_changes(planned_changes(home, HOSTED_MCP_URL), yes=True)
+    # Point the config at a different URL, then run setup again.
+    data = json.loads((home / ".claude.json").read_text())
+    data["mcpServers"]["eunoia"]["url"] = "http://other:9999/mcp"
+    (home / ".claude.json").write_text(json.dumps(data))
+    apply_changes(planned_changes(home, HOSTED_MCP_URL), yes=True)
+    first_backup = home / ".claude.json.bak"
+    assert first_backup.exists()
+    assert first_backup.read_text() == first_before
+    timestamped = sorted(home.glob(".claude.json.bak.*"))
+    assert len(timestamped) == 1, f"expected one timestamped backup, got {timestamped}"
+    assert json.loads(timestamped[0].read_text())["mcpServers"]["eunoia"][
+        "url"
+    ] == "http://other:9999/mcp"
 
 
 def test_apply_refuses_without_approval(tmp_path):
@@ -341,6 +397,57 @@ def test_check_update_reports_not_published():
 
     latest, needs_update = check_update("0.1.0", fetcher=fetcher)
     assert latest is None and needs_update is False
+
+
+def test_check_update_status_distinguishes_404_from_unavailable():
+    # Fix T5/M3: a 404 means "not published on PyPI yet"; a network
+    # error or a 5xx means "could not reach PyPI" — the two must not
+    # be reported the same way.
+    def not_found(url, timeout=10):
+        raise ValueError("404")
+
+    latest, needs_update, status = check_update_status("0.1.0", fetcher=not_found)
+    assert (latest, needs_update, status) == (None, False, "not_published")
+
+    def server_error(url, timeout=10):
+        raise urllib.error.HTTPError(url, 500, "Server Error", {}, None)
+
+    latest, needs_update, status = check_update_status("0.1.0", fetcher=server_error)
+    assert (latest, needs_update, status) == (None, False, "unavailable")
+
+    def no_network(url, timeout=10):
+        raise urllib.error.URLError("refused")
+
+    latest, needs_update, status = check_update_status("0.1.0", fetcher=no_network)
+    assert (latest, needs_update, status) == (None, False, "unavailable")
+
+
+def test_main_update_not_published_is_known_state(monkeypatch, capsys):
+    # 404: known state, exit 0, and the message must point at the
+    # checkout install that works today, not at a PyPI command.
+    import eunoia.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod, "_pypi_fetcher", lambda url, timeout=10: (_ for _ in ()).throw(ValueError("404"))
+    )
+    assert main(["update"]) == 0
+    out = capsys.readouterr().out
+    assert "not published on PyPI yet" in out
+    assert "pip install ." in out
+
+
+def test_main_update_unavailable_exits_nonzero(monkeypatch, capsys):
+    # 5xx / network failure: not a known state, exit non-zero and say
+    # PyPI could not be reached instead of claiming "not published".
+    import eunoia.cli as cli_mod
+
+    def failing(url, timeout=10):
+        raise urllib.error.HTTPError(url, 503, "Unavailable", {}, None)
+
+    monkeypatch.setattr(cli_mod, "_pypi_fetcher", failing)
+    assert main(["update"]) == 1
+    out = capsys.readouterr().out
+    assert "Could not reach PyPI" in out
 
 
 # --- main ------------------------------------------------------------------

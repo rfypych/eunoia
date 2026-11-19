@@ -1,9 +1,12 @@
 """The ``eunoia`` command-line client (T5, Rea-standard).
 
-One-command hosted install: ``pipx install eunoia-agents`` puts this
-command on PATH. The client talks to the hosted Eunoia API/MCP server
-and needs no local database — that is the point: the agent's brain lives
-on the server, the client only wires the agent to it.
+One-command hosted install, once the package is on PyPI:
+``pipx install eunoia-agents`` puts this command on PATH. Until the
+first PyPI release (blocked on the branch being pushed and the package
+being published), install from a checkout instead: ``pip install .``.
+The client talks to the hosted Eunoia API/MCP server and needs no
+local database — that is the point: the agent's brain lives on the
+server, the client only wires the agent to it.
 
 Subcommands:
 
@@ -40,6 +43,7 @@ import tomllib
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
 from typing import Callable
@@ -47,7 +51,6 @@ from typing import Callable
 __version__ = "0.1.0"
 PACKAGE_NAME = "eunoia-agents"
 PYPI_URL = f"https://pypi.org/pypi/{PACKAGE_NAME}/json"
-REPO_URL = "https://github.com/rfypych/eunoia"
 
 HOSTED_API_URL = os.environ.get("EUNOIA_API_URL", "http://129.150.57.82:10004")
 HOSTED_MCP_URL = os.environ.get("EUNOIA_MCP_URL", "http://129.150.57.82:10005/mcp")
@@ -70,6 +73,7 @@ __all__ = [
     "Change",
     "apply_changes",
     "check_update",
+    "check_update_status",
     "detect_clients",
     "doctor",
     "main",
@@ -217,6 +221,26 @@ def planned_changes(home: Path, mcp_url: str) -> list[Change]:
     return changes
 
 
+def _backup_path(path: Path) -> Path:
+    """Backup path for ``path`` without overwriting an earlier backup.
+
+    The first backup is ``<path>.bak``; later ones are timestamped
+    (``<path>.bak.YYYYMMDD-HHMMSS``, with a counter if the same second
+    is hit twice), so a second ``setup`` never silently destroys the
+    config the first ``setup`` saved.
+    """
+    first = Path(str(path) + ".bak")
+    if not first.exists():
+        return first
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    candidate = Path(f"{path}.bak.{stamp}")
+    counter = 2
+    while candidate.exists():
+        candidate = Path(f"{path}.bak.{stamp}-{counter}")
+        counter += 1
+    return candidate
+
+
 def apply_changes(
     changes: list[Change],
     *,
@@ -236,7 +260,7 @@ def apply_changes(
     written: list[Path] = []
     for change in changes:
         if change.action == "update" and change.before is not None:
-            backup = Path(str(change.path) + ".bak")
+            backup = _backup_path(change.path)
             backup.write_text(change.before)
             print(f"  backup: {backup}")
         change.path.parent.mkdir(parents=True, exist_ok=True)
@@ -411,17 +435,52 @@ def _version_tuple(version: str) -> tuple[int, ...]:
     return tuple(parts) or (0,)
 
 
-def check_update(installed_version: str, fetcher=None) -> tuple[str | None, bool]:
-    """Return ``(latest, needs_update)``; ``latest is None`` = not on PyPI."""
+def _classify_pypi_error(exc: Exception) -> str:
+    """``"not_published"`` for a PyPI 404, ``"unavailable"`` otherwise.
+
+    A 404 means the package is not on PyPI yet; a network error or a
+    5xx means PyPI could not be reached. The two must not be reported
+    the same way: one is a known state, the other is a transient
+    failure. ``_pypi_fetcher`` turns an HTTP error into
+    ``ValueError("<code>")``, so a bare ``"404"`` counts as well.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        return "not_published" if exc.code == 404 else "unavailable"
+    if isinstance(exc, ValueError) and str(exc).strip() == "404":
+        return "not_published"
+    return "unavailable"
+
+
+def check_update_status(
+    installed_version: str, fetcher=None
+) -> tuple[str | None, bool, str]:
+    """Return ``(latest, needs_update, status)``.
+
+    ``status`` is ``"ok"`` when PyPI answered, ``"not_published"``
+    when the package is not on PyPI yet (404), and ``"unavailable"``
+    when PyPI could not be reached (network error or 5xx). In the
+    last two cases ``latest`` is ``None``.
+    """
     fetcher = fetcher or _pypi_fetcher
     try:
         data = fetcher(PYPI_URL)
-    except Exception:
-        return None, False
+    except Exception as exc:  # 404, network error, 5xx: all "no latest"
+        return None, False, _classify_pypi_error(exc)
     latest = (data.get("info") or {}).get("version")
     if not latest:
-        return None, False
-    return latest, _version_tuple(latest) > _version_tuple(installed_version)
+        return None, False, "unavailable"
+    return latest, _version_tuple(latest) > _version_tuple(installed_version), "ok"
+
+
+def check_update(installed_version: str, fetcher=None) -> tuple[str | None, bool]:
+    """Return ``(latest, needs_update)``; ``latest is None`` = not on PyPI.
+
+    Kept for callers that only need the version: it collapses the
+    ``"unavailable"`` status into ``(None, False)``. New callers
+    should use :func:`check_update_status` instead.
+    """
+    latest, needs_update, _status = check_update_status(installed_version, fetcher)
+    return latest, needs_update
 
 
 def _installed_version() -> str:
@@ -519,16 +578,26 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "update":
         installed = _installed_version()
-        latest, needs_update = check_update(installed)
-        if latest is None:
+        latest, needs_update, status = check_update_status(installed)
+        if status == "not_published":
             print(
                 f"{PACKAGE_NAME} is not published on PyPI yet "
                 f"(checked {PYPI_URL}).\n"
-                f"Until it is, install from the repo:\n"
-                f"  pipx install git+{REPO_URL}\n"
+                f"Until the first PyPI release (blocked on the branch "
+                f"being pushed and the package being published), "
+                f"update from a checkout instead:\n"
+                f"  git pull\n"
+                f"  pip install .\n"
                 f"Installed version: {installed}"
             )
             return 0
+        if status == "unavailable":
+            print(
+                f"Could not reach PyPI to check for updates "
+                f"(checked {PYPI_URL}). Try again later.\n"
+                f"Installed version: {installed}"
+            )
+            return 1
         if not needs_update:
             print(f"eunoia {installed} is up to date (latest {latest}).")
             return 0

@@ -8,19 +8,31 @@ version = "0.1.0"
 description = "External brain for autonomous pentesting AI agents. \"Stack in, attack plan out.\""
 license = {text = "MIT"}
 requires-python = ">=3.12"
-dependencies = [
+# The base install is the `eunoia` CLI only, and the CLI is stdlib-only
+# on purpose: a one-command hosted install must not download the
+# server's heavy dependencies. Cold install of the base package was
+# 24 min / 5.8 GB when sentence-transformers (torch) was a base
+# dependency (measured 2026-11-19); the base install is now seconds
+# with no downloads beyond the build backend.
+dependencies = []
+
+[project.optional-dependencies]
+# The server (API + MCP + worker + ingestion): everything the hosted
+# service needs except the embedding model.
+server = [
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.2",
     "alembic>=1.13",
     "pgvector>=0.3",
     "httpx>=0.28",
-    "sentence-transformers>=3.0",
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "mcp>=2.0",
 ]
-
-[project.optional-dependencies]
+# Real embeddings only (sentence-transformers pulls torch, ~5.8 GB):
+# needed by the worker that embeds writeups, never by the CLI and
+# never by the test suite (tests inject a stub model).
+embed = ["sentence-transformers>=3.0"]
 dev = ["pytest>=8", "respx>=0.23"]
 
 [project.scripts]

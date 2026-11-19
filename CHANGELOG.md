@@ -20,6 +20,21 @@ Versioning.
   hosted API and MCP server with no local database. The package is not
   on PyPI yet (the name `eunoia` is taken there); until the first PyPI
   release, install from a checkout with `pip install .`.
+- Lightweight CLI install (fix T5): the base package has no
+  dependencies — the CLI is stdlib-only. Server dependencies moved to
+  the `server` extra and the embedding model to the `embed` extra
+  (which pulls torch). Cold-cache install measured 2026-11-19: base
+  `pip install .` 4 s / 16 MB venv (was 24 min / 5.8 GB with torch as
+  a base dependency); `.[dev,server]` cold 65 s / 121 MB, no torch.
+  The README now leads with the checkout install that works today;
+  `pipx install eunoia-agents` is documented as the command after the
+  first PyPI release, which is blocked on the branch being pushed (T2)
+  and on publishing. `eunoia update` now distinguishes "not published
+  on PyPI yet" (404) from "could not reach PyPI" (network/5xx).
+  `eunoia setup` keeps the first backup at `.bak` and timestamps
+  later ones instead of overwriting it. `scripts/setup_dev.sh`
+  reinstalls the editable package on every re-run so the `eunoia`
+  command is present in the dev venv.
 
 ### Pending operator decisions
 
@@ -31,7 +46,12 @@ contributor; they need a decision from the project operator:
   `docs/transparency.md` for the current status.
 - Domain and trademark for the Eunoia name: unchecked.
 - Public package name and publishing identity for the installable
-  client: unchecked.
+  client: the name `eunoia-agents` is free on PyPI (checked
+  2026-11-19), but the first PyPI release is blocked on the branch
+  being pushed to GitHub (T2) and on the operator publishing it.
+  Until then the T5 acceptance (one-command install from PyPI) is
+  not met; the checkout install (`pip install .`) is the working
+  path and is measured in the README.
 
 ## [0.1.0] - 2026-11-19
 

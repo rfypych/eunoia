@@ -7,7 +7,11 @@
 # What it does, in order (idempotent, safe to re-run; nothing here
 # drops a database):
 #   1. Creates .venv (Python 3.12) and installs the package + dev
-#      extras, only when the venv is missing or its imports are broken.
+#      and server extras (``.[dev,server]``), only when the venv is
+#      missing or its imports are broken; on every re-run it refreshes
+#      the editable install itself so the `eunoia` command is present.
+#      The embedding model is the separate `embed` extra (torch) and
+#      is never installed here.
 #   2. Brings up Postgres 16 + pgvector, in this order:
 #        a. Docker Compose (pgvector/pgvector:pg16) when Docker is
 #           available and nothing is already listening on 5432.
@@ -49,10 +53,17 @@ fi
 if [ ! -x "$VENV/bin/python" ]; then
     log "creating virtualenv with $PY ..."
     "$PY" -m venv "$VENV"
-    "$VENV/bin/python" -m pip install -q -e ".[dev]"
+    "$VENV/bin/python" -m pip install -q -e ".[dev,server]"
 elif ! "$VENV/bin/python" -c "import pytest, alembic" 2>/dev/null; then
     log "virtualenv is missing dev imports, installing ..."
-    "$VENV/bin/python" -m pip install -q -e ".[dev]"
+    "$VENV/bin/python" -m pip install -q -e ".[dev,server]"
+else
+    # Re-run refresh: re-install the editable package itself (no
+    # dependency resolution) so the `eunoia` console script is present
+    # in the dev venv even when the venv predates the CLI (T5/M6).
+    # The server deps live in the `server` extra; the embedding model
+    # lives in the `embed` extra and is never installed here (torch).
+    "$VENV/bin/python" -m pip install -q --no-deps -e .
 fi
 
 # --- 2. Postgres ---------------------------------------------------------

@@ -69,10 +69,27 @@ def test_ci_workflow_exists_and_runs_full_suite():
     assert "ubuntu-latest" in body
 
 
+def test_setup_script_installs_server_extra_and_reinstalls_editable():
+    # Fix T5/I1+M6: the dev setup installs the server extra
+    # (`. [dev,server]`, never the embed/torch extra), and on every
+    # re-run it refreshes the editable install so the `eunoia`
+    # console script is present in the dev venv.
+    body = SETUP.read_text()
+    assert ".[dev,server]" in body, "setup must install the server extra"
+    assert "[embed]" not in body, "setup must not install the torch/embed extra"
+    assert "pip install -q --no-deps -e ." in body, (
+        "setup must refresh the editable install on re-run (M6)"
+    )
+
+
 def test_ci_workflow_has_non_db_job():
     body = CI.read_text()
     for node in NON_DB_TESTS:
         assert node in body, f"CI non-DB job must run {node}"
+    # The non-DB job needs the server deps (test_dedup imports the
+    # SQLAlchemy models) but must not pull torch: install the server
+    # extra, not the bare package.
+    assert ".[dev,server]" in body, "CI non-DB job must install the server extra"
 
 
 def test_readme_documents_exact_setup_command():

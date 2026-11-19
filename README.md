@@ -32,15 +32,25 @@ Live status: [status](http://129.150.57.82:10004/v1/status) · writeups: [writeu
 
 ## Install (one command)
 
+Works today, from a checkout of [github.com/rfypych/eunoia](https://github.com/rfypych/eunoia):
+
 ```bash
-pipx install eunoia-agents
+pip install .
 eunoia setup
 eunoia doctor
 ```
 
-`eunoia setup` detects Claude Code, Codex and Cursor, shows the config change, asks before writing it, and backs up any config it replaces. `eunoia doctor` checks the hosted API and MCP server with no local database.
+`eunoia setup` detects Claude Code, Codex and Cursor, shows the config change, asks before writing it, and backs up any config it replaces (the first backup is `<file>.bak`, later ones are timestamped). `eunoia doctor` checks the hosted API and MCP server with no local database.
 
-The package is not on PyPI yet (checked 2026-11-19: the name `eunoia` is taken by another project, so the package is `eunoia-agents`). Until the first PyPI release, install from a checkout instead: `pip install .`, then run `.venv/bin/eunoia setup` and `.venv/bin/eunoia doctor` from the checkout's virtual environment.
+The install is light: the `eunoia` CLI uses only the standard library, so `pip install .` has no heavy dependencies. Cold-cache install in a fresh virtual environment, measured 2026-11-19: see "Measured results" below. The server dependencies are the optional `server` extra (`pip install ".[server]"`), and the embedding model is the separate `embed` extra (`pip install "eunoia-agents[embed]"`, which pulls torch).
+
+After the first PyPI release, the one command will be:
+
+```bash
+pipx install eunoia-agents
+```
+
+That command does not work yet: the package is not on PyPI yet (checked 2026-11-19: the name `eunoia` is taken by another project, so the package is `eunoia-agents`). The first PyPI release is blocked on the branch being pushed to GitHub (T2) and on the package being published — until then, install from a checkout as above.
 
 ## Quick start
 
@@ -105,10 +115,11 @@ Measured read-only on the real production corpus of 50 writeups, 20 queries, 202
 
 - **Recall@10: 0.90** overall (pre-test 1.00, mid-test 0.75). The 3 misses were all mid-test.
 - **Latency: p50 20.34 ms, p95 32.66 ms.**
+- **Cold-cache install (2026-11-19):** `pip install .` in a fresh virtual environment took 4 s, venv 16 MB (base CLI only, stdlib-only; it was 24 min / 5.8 GB when torch was a base dependency). `pip install ".[dev,server]"` cold took 65 s, venv 121 MB, with no torch installed. `eunoia doctor` from the cold base venv: OK (50 writeups active, 6 tools).
 - **Corpus: 50 writeups, 50/50 with embeddings, 0 quarantined rows in the top 10.**
 - **Source health: HackerOne ok, 0 consecutive failures.** Check the current numbers at [status](http://129.150.57.82:10004/v1/status).
 
-Honest limits, same date: recall was measured on a 50-writeup corpus, so it is not a launch-grade number yet. The 7-day poller window started 2026-11-19 02:49 UTC and ends around 2026-11-26. The website/demo is not yet live, and the `eunoia-agents` package is not on PyPI yet; the install command above works from a checkout today.
+Honest limits, same date: recall was measured on a 50-writeup corpus, so it is not a launch-grade number yet. The 7-day poller window started 2026-11-19 02:49 UTC and ends around 2026-11-26. The website/demo is not yet live, and the `eunoia-agents` package is not on PyPI yet; the install command that works today is `pip install .` from a checkout (see Install above).
 
 ## Development setup (one command)
 
@@ -154,7 +165,7 @@ Only with explicit permission for a target in scope. Eunoia gives hypotheses wit
 Not yet live. The API root still returns 404; the website/demo is planned work.
 
 **Is there a one-command install?**
-Yes, with a caveat: `pipx install eunoia-agents` is the command, but the package is not on PyPI yet (checked 2026-11-19), so today install from a checkout with `pip install .` and run `eunoia setup`.
+Yes, from a checkout: `pip install .`, then `eunoia setup`. The single PyPI command `pipx install eunoia-agents` will work after the first PyPI release, which is blocked on the branch being pushed and the package being published.
 
 **What is the licence?**
 MIT. See [LICENSE](LICENSE).
