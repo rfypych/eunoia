@@ -143,11 +143,12 @@ unmeasured stays `[]` with the reason.
 - DoD 1 is unmet: no 7-day unattended poller run has happened yet.
 - DMCA agent email is a placeholder (`dmca@eunoia.example`) — must
   be replaced with a real operator contact before public launch.
-- No production deployment exists yet: `deploy/supervisord-eunoia.conf`
-  is an example config, not installed anywhere; `docker-compose.yml`
-  was never run on a Docker host.
-- Recall 0.9300 is a synthetic-corpus measurement (Task 15 minor);
-  re-measure after real ingestion before setting a pass bar.
+- Production deployment: live since 19 Nov 2026 (supervisord on
+  the operator box, API port 10004, MCP port 10005);
+  `docker-compose.yml` was never run on a Docker host yet.
+- Recall@10 0.90 was measured on the real 50-writeup corpus on
+  19 Nov 2026; the 0.9300 figure is a synthetic-corpus measurement
+  kept as a regression fixture only.
 - No production LLM judge is wired (spec §9 Q4, `JUDGE_Q4_DEBT` in
   `src/eunoia/safety/approvals.py`): exploit / credential-use /
   state-changing actions require a judge pass AND recorded human

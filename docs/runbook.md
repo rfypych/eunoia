@@ -3,7 +3,7 @@
 The schedules below are real mechanisms now (Task 16), not prose:
 `src/eunoia/worker.py` (`run_poll_cycle`, `run_kev_sync_once`),
 `scripts/worker.py` (thin CLI), `deploy/supervisord-eunoia.conf`
-(example supervisord unit + the cron line for KEV sync). What
+(supervisord unit + the cron line for KEV sync). What
 deployment still has to do is install those units and point
 `DATABASE_URL` at the deployment Postgres — nothing in this repo
 runs them on its own.

@@ -8,8 +8,10 @@ writeup is not permission to reproduce it against a live target.
 ## DMCA agent
 
 - **Agent:** Eunoia DMCA Agent
-- **Email:** dmca@eunoia.example (placeholder — set the real operator
-  contact before any public launch)
+- **Email:** not yet set — no DMCA agent email has been published
+  yet. Until the operator provides one, send takedown requests
+  via a GitHub issue on this repository titled "Takedown request".
+  The current status is recorded in `docs/transparency.md`.
 
 ## What a valid DMCA notice must contain (17 U.S.C. §512(c)(3))
 

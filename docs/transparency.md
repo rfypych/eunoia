@@ -66,11 +66,14 @@ a pinned review-queue query surface, not agent serving.
 
 ## Data honesty
 
-- **Corpus is synthetic.** The MVP corpus is the 26-writeup golden
-  set (25 active), seeded from `docs/golden/corpus.json` — a
-  benchmark corpus, not ingested disclosures. Recall@10 0.9300
-  (18 Nov 2026) is measured on that corpus; re-measure after real
-  ingestion before any pass bar is set.
+- **Corpus, dev vs production.** The dev seed corpus is synthetic:
+  the 26-writeup golden set (25 active), seeded from
+  `docs/golden/corpus.json` — a benchmark corpus, not ingested
+  disclosures. Recall@10 0.9300 (18 Nov 2026) is measured on that
+  corpus and is kept as a regression fixture only. The production
+  corpus is real: 50 HackerOne writeups, 50/50 embeddings, as of
+  19 Nov 2026, with recall@10 0.90 measured on it the same day
+  (20 queries, pre-test 1.00, mid-test 0.75).
 - **CVE-2021-44228 lists CWE-917 + CWE-918** in `cve_cache`
   because the two fixture writeups claim different CWEs for it
   (union). That is a synthetic-fixture claim, not NVD's canonical
@@ -96,9 +99,11 @@ a pinned review-queue query surface, not agent serving.
 - Production LLM judge: none wired (spec §9 Q4, `JUDGE_Q4_DEBT`).
   Exploit / credential-use / state-changing actions require a
   judge pass AND recorded human approval.
-- Production deployment: none yet. `deploy/supervisord-eunoia.conf`
-  is an example config; `docker-compose.yml` was never run on a
-  Docker host.
+- Production deployment: live since 19 Nov 2026 on the operator
+  box under supervisord (API port 10004, MCP port 10005, worker
+  polling every 15 minutes). `deploy/supervisord-eunoia.conf` is
+  the supervisord unit installed there; `docker-compose.yml` was
+  never run on a Docker host.
 - Harness lookups are unmetered by design: the harness is a peer
   of the MCP server, not a client — it calls the search engine
   directly with the same parameters the MCP tool uses (limit 5/3,
