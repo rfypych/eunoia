@@ -16,8 +16,9 @@ Meta-tests, no database needed. They pin the T4 acceptance criteria:
 - The one-minute sections are pinned by content, not just by a
   keyword: the one-sentence pitch, who it is for, the example agent
   prompt, a CLI example, and the search table must all be present.
-- No placeholder strings, and every paragraph mentioning the
-  website/demo must say it is not yet live (it is T6 work).
+- No placeholder strings, and the website/demo is live at the API
+  root (T6): every paragraph mentioning it must say it is live,
+  never that it is not yet live.
 """
 
 from __future__ import annotations
@@ -33,9 +34,11 @@ README = _REPO / "README.md"
 # API /v1/status, /v1/writeups, /llms.txt, /api/v1/openapi.json and a
 # /v1/search query all returned 200; POST /mcp tools/list returned the
 # 6 read-only tools; https://github.com/rfypych/eunoia returned 200.
-# The API root returns 404, so it is never linked as a live page.
+# The API root serves the T6 website/demo page: GET / returned 200
+# HTML, verified live 2026-11-19 after deploy (eunoia-api restart).
 VERIFIED_ABSOLUTE_URLS = {
     "https://github.com/rfypych/eunoia",
+    "http://129.150.57.82:10004/",
     "http://129.150.57.82:10004/v1/status",
     "http://129.150.57.82:10004/v1/writeups",
     "http://129.150.57.82:10004/llms.txt",
@@ -117,6 +120,7 @@ def test_readme_absolute_links_are_verified_live():
 # the one real canonical HackerOne link used as the search example.
 _ALLOWED_BARE_PATHS = {
     ("github.com", "/rfypych/eunoia"),
+    ("129.150.57.82:10004", "/"),
     ("129.150.57.82:10004", "/v1/status"),
     ("129.150.57.82:10004", "/v1/search"),
     ("129.150.57.82:10004", "/v1/writeups"),
@@ -135,18 +139,21 @@ def test_readme_bare_urls_are_verified_live():
         )
 
 
-def test_readme_has_no_placeholders_and_no_live_website_claim():
+def test_readme_has_no_placeholders_and_website_is_live():
     body = _body()
     lowered = body.lower()
     assert "placeholder" not in lowered
     assert "dmca@eunoia.example" not in lowered
     assert "example.com" not in lowered
     assert "todo" not in lowered
-    # Tightened (review M4): every paragraph mentioning the website
-    # must say it is not yet live, not just one occurrence somewhere.
+    # Tightened (review M4, updated T6): every paragraph mentioning
+    # the website must say it is live, never "not yet live".
     for paragraph in body.split("\n\n"):
         if "website" not in paragraph.lower():
             continue
-        assert "not yet live" in paragraph.lower(), (
-            f"a paragraph mentions the website without saying it is not yet live: {paragraph[:120]!r}"
+        assert "not yet live" not in paragraph.lower(), (
+            f"a paragraph says the website is not yet live: {paragraph[:120]!r}"
+        )
+        assert "live" in paragraph.lower(), (
+            f"a paragraph mentions the website without saying it is live: {paragraph[:120]!r}"
         )

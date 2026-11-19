@@ -119,7 +119,7 @@ Measured read-only on the real production corpus of 50 writeups, 20 queries, 202
 - **Corpus: 50 writeups, 50/50 with embeddings, 0 quarantined rows in the top 10.**
 - **Source health: HackerOne ok, 0 consecutive failures.** Check the current numbers at [status](http://129.150.57.82:10004/v1/status).
 
-Honest limits, same date: recall was measured on a 50-writeup corpus, so it is not a launch-grade number yet. The 7-day poller window started 2026-11-19 02:49 UTC and ends around 2026-11-26. The website/demo is not yet live, and the `eunoia-agents` package is not on PyPI yet; the install command that works today is `pip install .` from a checkout (see Install above).
+Honest limits, same date: recall was measured on a 50-writeup corpus, so it is not a launch-grade number yet. The 7-day poller window started 2026-11-19 02:49 UTC and ends around 2026-11-26. The website/demo is live at http://129.150.57.82:10004/ — search from the page calls the live API. The `eunoia-agents` package is not on PyPI yet; the install command that works today is `pip install .` from a checkout (see Install above).
 
 ## Development setup (one command)
 
@@ -162,7 +162,7 @@ Public HackerOne Hacktivity disclosures, enriched with NVD/CVE data. Each result
 Only with explicit permission for a target in scope. Eunoia gives hypotheses with evidence; it does not authorise testing.
 
 **Is there a website or demo page?**
-Not yet live. The API root still returns 404; the website/demo is planned work.
+Yes, live at http://129.150.57.82:10004/ — a search box that calls `/v1/search`, an example search on load, and links to the API docs, `llms.txt`, and MCP.
 
 **Is there a one-command install?**
 Yes, from a checkout: `pip install .`, then `eunoia setup`. The single PyPI command `pipx install eunoia-agents` will work after the first PyPI release, which is blocked on the branch being pushed and the package being published.

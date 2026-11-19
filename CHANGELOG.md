@@ -35,6 +35,11 @@ Versioning.
   later ones instead of overwriting it. `scripts/setup_dev.sh`
   reinstalls the editable package on every re-run so the `eunoia`
   command is present in the dev venv.
+- Website / demo live at the API root (T6): a search box that calls
+  the live `/v1/search`, a CSRF search on load, the live corpus
+  size from `/v1/status`, and links to the API docs, `llms.txt`, MCP,
+  and GitHub. The page says the `eunoia-agents` package is not on
+  PyPI yet and never claims 500 writeups.
 
 ### Pending operator decisions
 

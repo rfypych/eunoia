@@ -12,6 +12,8 @@ Endpoints (all under ``/v1``; OpenAPI 3.x at ``/api/v1/openapi.json``):
 * ``GET /v1/programs`` / ``/v1/authors`` / ``/v1/vuln-classes`` — facets
 * ``GET /v1/status`` — public, no key (see ``eunoia.api.status``)
 * ``GET /llms.txt`` — llms.txt index (Task 12 renders, Task 16 serves)
+* ``GET /`` — website / demo page (T6): HTML, search box calls
+  ``/v1/search`` live, corpus size comes from ``/v1/status``
 * ``POST /v1/submissions`` — review queue; never auto-indexes
 
 Contract notes (binding handoffs from Task 9):
@@ -38,7 +40,7 @@ from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
@@ -571,6 +573,118 @@ class SubmissionIn(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Website / demo page (T6)
+# ---------------------------------------------------------------------------
+
+_WEBSITE_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Eunoia — external brain for pentesting agents</title>
+<style>
+body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2em auto; padding: 0 1em; line-height: 1.5; }
+input { width: 70%; padding: 0.5em; font-size: 1em; }
+button { padding: 0.5em 1em; font-size: 1em; }
+.example { margin: 0.3em 0.3em 0.3em 0; }
+li { margin-bottom: 1em; }
+.meta { color: #555; margin: 0.2em 0; }
+</style>
+</head>
+<body>
+<h1>Eunoia</h1>
+<p><strong>Eunoia is an external brain for autonomous pentesting AI agents:
+stack in, attack plan out.</strong></p>
+<p id="status">Loading corpus status&hellip;</p>
+<form id="search-form">
+<label for="search">Search real public writeups:</label><br>
+<input id="search" name="q" type="search" value="CSRF" autocomplete="off">
+<button type="submit">Search</button>
+</form>
+<p>
+<button class="example" type="button" data-q="CSRF">CSRF</button>
+<button class="example" type="button" data-q="XSS">XSS</button>
+<button class="example" type="button" data-q="IDOR">IDOR</button>
+<button class="example" type="button" data-q="SSRF">SSRF</button>
+</p>
+<div id="results"></div>
+<h2>Scope and install</h2>
+<p>Corpus: real public HackerOne writeups, Java/Spring only for now.
+Growing the corpus is planned work; the live count above comes from
+the API status endpoint.</p>
+<p>Install: from a checkout, <code>pip install .</code>, then
+<code>eunoia setup</code>. The <code>eunoia-agents</code> package is
+not on PyPI yet.</p>
+<p>Eunoia stores metadata and links, not full text. It does not test
+anything live. Every hypothesis still needs explicit in-scope
+permission before any testing.</p>
+<h2>Links</h2>
+<ul>
+<li><a href="/v1/status">API status</a></li>
+<li><a href="/v1/writeups">Writeups</a></li>
+<li><a href="/llms.txt">llms.txt</a></li>
+<li><a href="/api/v1/openapi.json">API docs (OpenAPI)</a></li>
+<li><a href="http://129.150.57.82:10005/mcp">MCP endpoint</a></li>
+<li><a href="https://github.com/rfypych/eunoia">GitHub</a></li>
+</ul>
+<script>
+async function runSearch(q) {
+  var box = document.getElementById("results");
+  box.textContent = "Searching\\u2026";
+  var res = await fetch("/v1/search?q=" + encodeURIComponent(q) + "&limit=5");
+  var data = await res.json();
+  box.textContent = "";
+  if (!data.results || data.results.length === 0) {
+    box.textContent = "No results for " + q + ".";
+    return;
+  }
+  var list = document.createElement("ul");
+  for (var i = 0; i < data.results.length; i++) {
+    var r = data.results[i];
+    var li = document.createElement("li");
+    var a = document.createElement("a");
+    a.href = r.canonical_url;
+    a.textContent = r.title;
+    a.target = "_blank";
+    a.rel = "noopener";
+    var meta = document.createElement("p");
+    meta.className = "meta";
+    var parts = [];
+    if (r.severity) { parts.push(r.severity); }
+    if (r.cwe_ids && r.cwe_ids.length) { parts.push(r.cwe_ids.join(", ")); }
+    if (r.score !== undefined && r.score !== null) { parts.push("score " + r.score); }
+    meta.textContent = parts.join(" \\u00b7 ");
+    li.appendChild(a);
+    li.appendChild(meta);
+    list.appendChild(li);
+  }
+  box.appendChild(list);
+}
+fetch("/v1/status").then(function (res) { return res.json(); }).then(function (s) {
+  var el = document.getElementById("status");
+  var source = (s.sources && s.sources.length) ? s.sources[0].status : "unknown";
+  el.textContent = s.writeups_active + " writeups active \\u00b7 HackerOne: " + source;
+}).catch(function () {});
+document.getElementById("search-form").addEventListener("submit", function (e) {
+  e.preventDefault();
+  runSearch(document.getElementById("search").value);
+});
+var buttons = document.querySelectorAll("button.example");
+for (var i = 0; i < buttons.length; i++) {
+  buttons[i].addEventListener("click", function (e) {
+    var q = e.currentTarget.getAttribute("data-q");
+    document.getElementById("search").value = q;
+    runSearch(q);
+  });
+}
+runSearch("CSRF");
+</script>
+</body>
+</html>
+"""
+
+
+# ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
 
@@ -1023,6 +1137,13 @@ def create_app(
     def get_status(session: Session = Depends(_session)):
         """Public, no key. A blocked source is visible here."""
         return build_status(session)
+
+    @app.get("/", response_class=HTMLResponse)
+    def get_website():
+        """Website / demo page (T6). Static HTML; the search box and
+        the corpus count call the live API from the browser, so the
+        page never shows a stale copy of the data."""
+        return HTMLResponse(_WEBSITE_HTML)
 
     @app.get("/llms.txt")
     def get_llms_txt(session: Session = Depends(_session)):
