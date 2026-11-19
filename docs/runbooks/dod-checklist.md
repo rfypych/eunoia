@@ -65,7 +65,7 @@ measurements are kept in `CHANGELOG.md` 0.1.0 and in
 - [ ] 10. Tagged release, changelog, LICENSE MIT, GitHub head equals local HEAD.
   Reason: LICENSE MIT and the changelog exist, but no release tag
   exists yet, and remote `main` is 3731a3a (19 Nov 2026) while the
-  newest work (through the structured documentation, commit 2eb61e5) is on
+  newest work (through the structured documentation) is on
   the `rea-standard` branch and is not on `main` yet.
 
 ## Known gaps / launch blockers (not hidden)

@@ -487,7 +487,7 @@ def get_vuln_class_skill(vuln_class: str,
             .limit(5)
         ).all()
         # One entry per writeup: a writeup with several vuln rows in
-        # the same class joins once per row (Task 12 triage item).
+        # the same class joins once per row.
         seen: set = set()
         deduped = []
         for writeup, vuln in rows:

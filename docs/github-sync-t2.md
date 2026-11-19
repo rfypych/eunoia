@@ -13,7 +13,7 @@ Remote `main` berubah `7d1efbeb` → `3731a3a`, dan CI GitHub pertama
 hijau di commit itu (kedua job: `test` dan `no-db`).
 
 Keadaan sekarang: remote `main` adalah `3731a3a` (19 Nov 2026).
-Branch `rea-standard` lokal sudah lebih baru (HEAD `2eb61e5`,
+Branch `rea-standard` lokal sudah lebih baru (newer than `main`,
 website/demo, korpus 500, MCP, skills, showcases, structured
 documentation) dan belum ada di `main` remote. Push berikutnya memakai cara yang sama (bundle
 atau push langsung dari laptop) setelah review tiap tugas selesai.
